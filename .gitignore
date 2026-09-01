@@ -1,0 +1,33 @@
+# ============================================================================
+#  SERRA SMART — file da NON versionare
+# ============================================================================
+
+# --- Credenziali -------------------------------------------------------------
+# secrets.h contiene password WiFi, MQTT e OTA. Nel repository resta solo
+# secrets.h.example come modello da copiare.
+**/secrets.h
+
+# Password del broker Mosquitto
+**/mosquitto/config/password.txt
+**/mosquitto/config/pwfile
+
+# --- Dati generati a runtime dal server -------------------------------------
+**/mosquitto/data/
+**/mosquitto/log/
+
+# --- Artefatti di compilazione Arduino --------------------------------------
+build/
+*.bin
+*.elf
+*.map
+*.hex
+
+# --- Eseguibili finiti qui per sbaglio --------------------------------------
+*.exe
+
+# --- Sistema operativo ed editor --------------------------------------------
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/

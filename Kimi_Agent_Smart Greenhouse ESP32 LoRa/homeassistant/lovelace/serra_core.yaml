@@ -1,0 +1,324 @@
+# ============================================================================
+#  SERRA SMART — Dashboard Lovelace (versione CORE, nessuna dipendenza)
+# ============================================================================
+#
+#  COME INSTALLARLA
+#  ----------------
+#  1. Impostazioni -> Dashboard -> "+ Aggiungi dashboard" -> "Nuova dashboard
+#     da zero". Chiamala "Serra".
+#  2. Aprila, menu in alto a destra -> "Modifica dashboard"
+#  3. Di nuovo il menu -> "Editor di configurazione raw"
+#  4. Cancella tutto e incolla questo file.
+#
+#  Usa solo schede incluse in Home Assistant: nessun HACS, nessuna
+#  installazione, nessuna manutenzione. Richiede Home Assistant 2024.3 o
+#  successivo per il layout "sections" (se hai una versione precedente,
+#  sostituisci  type: sections  con  type: masonry  e togli le chiavi
+#  "sections:"/"column_span:", spostando le schede in un unico elenco "cards:").
+#
+#  NOTA SUGLI ENTITY ID: sono quelli generati dalla MQTT Discovery del ponte.
+#  Se il tuo Home Assistant li ha numerati diversamente (capita se in passato
+#  esistevano entita' con lo stesso nome), correggili qui.
+# ============================================================================
+
+views:
+  # =========================================================================
+  #  VISTA 1 — Sintesi
+  # =========================================================================
+  - title: Serra
+    path: serra
+    icon: mdi:greenhouse
+    type: sections
+    max_columns: 3
+
+    # --- Badge in cima: lo stato in un colpo d'occhio ----------------------
+    badges:
+      - type: entity
+        entity: sensor.serra_stato_generale
+        name: Stato
+      - type: entity
+        entity: sensor.serra_ultimo_contatto
+        name: Ultimo dato
+      - type: entity
+        entity: sensor.serra_tensione_batteria
+        name: Batteria
+      - type: entity
+        entity: sensor.serra_segnale_lora
+        name: LoRa
+      - type: entity
+        entity: sensor.serra_comandi_in_coda
+        name: In coda
+        visibility:
+          - condition: numeric_state
+            entity: sensor.serra_comandi_in_coda
+            above: 0
+      - type: entity
+        entity: sensor.serra_record_in_backlog
+        name: Backlog
+        visibility:
+          - condition: numeric_state
+            entity: sensor.serra_record_in_backlog
+            above: 0
+
+    sections:
+      # ---------------------------------------------------------------------
+      #  Clima
+      # ---------------------------------------------------------------------
+      - type: grid
+        cards:
+          - type: heading
+            heading: Clima
+            heading_style: title
+            icon: mdi:thermometer
+
+          - type: tile
+            entity: sensor.serra_temperatura
+            features_position: bottom
+            vertical: false
+
+          - type: tile
+            entity: sensor.serra_umidita_aria
+
+          - type: tile
+            entity: sensor.serra_vpd
+            # Il VPD dice quanta "sete d'aria" hanno le piante: sotto 0,4 kPa
+            # e' troppo umido (rischio funghi), sopra 1,6 kPa c'e' stress idrico.
+
+          - type: tile
+            entity: sensor.serra_pressione
+
+          - type: tile
+            entity: sensor.serra_luce
+
+      # ---------------------------------------------------------------------
+      #  Irrigazione — la sezione dei comandi
+      # ---------------------------------------------------------------------
+      - type: grid
+        cards:
+          - type: heading
+            heading: Irrigazione
+            heading_style: title
+            icon: mdi:sprinkler-variant
+
+          # Avviso: i comandi non partono subito, il nodo dorme.
+          - type: markdown
+            content: >-
+              {% set coda = states('sensor.serra_comandi_in_coda') | int(0) %}
+              {% if coda > 0 %}
+              ### Comando in coda
+
+              Ci sono **{{ coda }}** comandi in attesa. Il nodo li eseguira' al
+              prossimo risveglio (entro
+              {{ (states('number.serra_intervallo_risveglio') | int(900) / 60) | round(0) }}
+              minuti): la serra e' in deep sleep e ascolta solo quando trasmette.
+              {% else %}
+              Nessun comando in attesa. Ultima irrigazione:
+              **{{ states('sensor.serra_esito_irrigazione') }}**.
+              {% endif %}
+            visibility:
+              - condition: state
+                entity: sensor.serra_comandi_in_coda
+                state_not: "unavailable"
+
+          - type: horizontal-stack
+            cards:
+              - type: button
+                entity: button.serra_irriga_ora
+                name: Irriga ora
+                icon: mdi:sprinkler
+                show_state: false
+                tap_action:
+                  action: toggle
+              - type: button
+                entity: button.serra_blocca_irrigazione_per_oggi
+                name: Blocca oggi
+                icon: mdi:water-off
+                show_state: false
+                tap_action:
+                  action: toggle
+
+          - type: entities
+            title: Programmazione
+            entities:
+              - entity: switch.serra_irrigazione_automatica
+                name: Automatica
+              - entity: time.serra_orario_irrigazione
+                name: Orario
+              - entity: number.serra_durata_irrigazione
+                name: Durata
+              - entity: number.serra_soglia_umidita_terreno
+                name: Irriga solo sotto (-1 = sempre)
+              - type: attribute
+                entity: sensor.serra_stato_generale
+                attribute: minuti_silenzio
+                name: Minuti dall'ultimo contatto
+                suffix: " min"
+
+          - type: entities
+            title: Acqua
+            entities:
+              - entity: sensor.serra_acqua_ultima_irrigazione
+                name: Ultima irrigazione
+              - entity: sensor.acqua_serra_oggi
+                name: Oggi
+              - entity: sensor.acqua_serra_questo_mese
+                name: Questo mese
+              - entity: sensor.serra_acqua_totale
+                name: Totale storico
+              - entity: sensor.serra_esito_irrigazione
+                name: Esito ultimo ciclo
+
+      # ---------------------------------------------------------------------
+      #  Terreno
+      # ---------------------------------------------------------------------
+      - type: grid
+        cards:
+          - type: heading
+            heading: Umidita' del terreno
+            heading_style: title
+            icon: mdi:water-percent
+
+          - type: gauge
+            entity: sensor.serra_umidita_terreno_1
+            name: Zona 1
+            min: 0
+            max: 100
+            needle: true
+            severity:
+              green: 40
+              yellow: 20
+              red: 0
+
+          - type: gauge
+            entity: sensor.serra_umidita_terreno_2
+            name: Zona 2
+            min: 0
+            max: 100
+            needle: true
+            severity:
+              green: 40
+              yellow: 20
+              red: 0
+
+          - type: markdown
+            content: >-
+              I sensori sono **resistivi**: si corrodono col tempo, quindi il
+              nodo li alimenta solo per la frazione di secondo della misura.
+              Se le letture diventano incoerenti, ricalibrali con il comando
+              `CAL,soil1,<grezzo in aria>,<grezzo in acqua>` oppure sostituiscili.
+
+      # ---------------------------------------------------------------------
+      #  Grafici
+      # ---------------------------------------------------------------------
+      - type: grid
+        column_span: 2
+        cards:
+          - type: heading
+            heading: Andamento
+            heading_style: title
+            icon: mdi:chart-line
+
+          - type: history-graph
+            title: Temperatura e umidita' (24 h)
+            hours_to_show: 24
+            entities:
+              - entity: sensor.serra_temperatura
+              - entity: sensor.serra_umidita_aria
+
+          - type: history-graph
+            title: Terreno e luce (3 giorni)
+            hours_to_show: 72
+            entities:
+              - entity: sensor.serra_umidita_terreno_1
+              - entity: sensor.serra_umidita_terreno_2
+              - entity: sensor.serra_luce
+
+          - type: statistics-graph
+            title: Acqua consumata
+            chart_type: bar
+            period: day
+            days_to_show: 30
+            stat_types:
+              - state
+            entities:
+              - sensor.serra_acqua_totale
+
+          - type: history-graph
+            title: Batteria (7 giorni)
+            hours_to_show: 168
+            entities:
+              - entity: sensor.serra_tensione_batteria
+
+  # =========================================================================
+  #  VISTA 2 — Diagnostica
+  # =========================================================================
+  - title: Diagnostica
+    path: diagnostica
+    icon: mdi:stethoscope
+    type: sections
+    max_columns: 2
+
+    sections:
+      - type: grid
+        cards:
+          - type: heading
+            heading: Nodo serra
+            icon: mdi:chip
+
+          - type: entities
+            entities:
+              - entity: sensor.serra_firmware_nodo
+              - entity: sensor.serra_ora_nodo
+                name: Ora dell'orologio del nodo
+              - entity: sensor.serra_motivo_ultimo_riavvio
+              - entity: sensor.serra_record_in_backlog
+              - entity: sensor.serra_pacchetto_troncato
+              - entity: sensor.serra_segnale_lora
+              - entity: sensor.serra_snr_lora
+              - entity: number.serra_intervallo_risveglio
+
+          - type: markdown
+            content: >-
+              **Motivi di riavvio** (numero riportato dal nodo): 1 accensione,
+              3 software, 4 panic, 6 watchdog task, 7 watchdog interrupt,
+              8 deep sleep (normale), 9 brownout.
+              Se vedi ripetutamente **9 (brownout)** l'alimentazione non regge
+              gli assorbimenti di picco della radio: alimentatore o batteria
+              da rivedere.
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Ponte in camera
+            icon: mdi:radio-tower
+
+          - type: entities
+            entities:
+              - entity: binary_sensor.serra_ponte_online
+              - entity: sensor.serra_ponte_uptime
+              - entity: sensor.serra_ponte_segnale_wifi
+              - entity: sensor.serra_ponte_memoria_libera
+              - entity: sensor.serra_pacchetti_ricevuti
+              - entity: sensor.serra_comandi_consegnati
+              - entity: sensor.serra_comandi_in_coda
+              - entity: sensor.serra_esito_ultimo_comando
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Manutenzione
+            icon: mdi:tools
+
+          - type: entities
+            entities:
+              - entity: button.serra_finestra_manutenzione_2_min
+                name: Resta sveglio 2 minuti
+              - entity: button.serra_svuota_backlog
+              - entity: button.serra_riavvia_nodo_serra
+
+          - type: markdown
+            content: >-
+              **Finestra di manutenzione**: il nodo resta sveglio due minuti
+              continuando a chiedere comandi. Serve quando devi fare piu'
+              regolazioni di seguito senza aspettare un risveglio per ognuna.
+              Consuma batteria, quindi usala solo quando serve.

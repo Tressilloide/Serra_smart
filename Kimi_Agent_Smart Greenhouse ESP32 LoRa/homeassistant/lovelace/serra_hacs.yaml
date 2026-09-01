@@ -1,0 +1,409 @@
+# ============================================================================
+#  SERRA SMART — Dashboard Lovelace (versione HACS)
+# ============================================================================
+#
+#  SCHEDE RICHIESTE (da installare in HACS -> Frontend prima di incollare):
+#    - Mushroom            (cerca "Mushroom")
+#    - ApexCharts Card     (cerca "apexcharts-card")
+#    - card-mod            (facoltativa, solo per gli angoli arrotondati)
+#
+#  Dopo l'installazione ricarica la pagina con CTRL+F5, altrimenti le schede
+#  risultano "non trovate" anche se sono installate.
+#
+#  INSTALLAZIONE
+#    Impostazioni -> Dashboard -> "+ Aggiungi dashboard" -> "Nuova dashboard
+#    da zero" -> aprila -> Modifica -> "Editor di configurazione raw" ->
+#    cancella tutto e incolla questo file.
+#
+#  Se preferisci non installare nulla, usa serra_core.yaml: stesse funzioni,
+#  solo meno curata graficamente.
+# ============================================================================
+
+views:
+  # =========================================================================
+  #  VISTA 1 — Panoramica
+  # =========================================================================
+  - title: Serra
+    path: serra
+    icon: mdi:greenhouse
+    type: sections
+    max_columns: 3
+
+    sections:
+      # ---------------------------------------------------------------------
+      #  Testata: stato del sistema a colpo d'occhio
+      # ---------------------------------------------------------------------
+      - type: grid
+        column_span: 3
+        cards:
+          - type: custom:mushroom-template-card
+            primary: Serra
+            secondary: >-
+              {{ states('sensor.serra_stato_generale') }} ·
+              {{ states('sensor.serra_temperatura') }}°C ·
+              {{ states('sensor.serra_umidita_aria') }}%
+            icon: mdi:greenhouse
+            # Il colore dell'icona racconta lo stato senza dover leggere nulla:
+            # rosso = qualcosa non va, arancio = attenzione, verde = tutto ok.
+            icon_color: >-
+              {% set s = states('sensor.serra_stato_generale') %}
+              {% if s in ['Ponte offline', 'Nodo non risponde'] %} red
+              {% elif s in ['Batteria scarica'] %} orange
+              {% elif s in ['Comando in coda', 'Dati in attesa'] %} blue
+              {% else %} green
+              {% endif %}
+            multiline_secondary: true
+            tap_action:
+              action: navigate
+              navigation_path: /serra/diagnostica
+
+          - type: custom:mushroom-chips-card
+            alignment: center
+            chips:
+              - type: entity
+                entity: sensor.serra_tensione_batteria
+                icon: mdi:battery
+                icon_color: >-
+                  {% set v = states('sensor.serra_tensione_batteria') | float(0) %}
+                  {% if v < 11.0 %} red {% elif v < 11.8 %} orange {% else %} green {% endif %}
+              - type: entity
+                entity: sensor.serra_segnale_lora
+                icon: mdi:signal
+              - type: template
+                icon: mdi:clock-outline
+                content: >-
+                  {{ states('sensor.serra_minuti_silenzio') }} min fa
+                icon_color: >-
+                  {% if states('sensor.serra_minuti_silenzio') | int(9999) > 60 %} orange
+                  {% else %} grey {% endif %}
+              - type: entity
+                entity: sensor.serra_record_in_backlog
+                icon: mdi:database-clock
+                icon_color: orange
+                visibility:
+                  - condition: numeric_state
+                    entity: sensor.serra_record_in_backlog
+                    above: 0
+              - type: entity
+                entity: sensor.serra_comandi_in_coda
+                icon: mdi:playlist-play
+                icon_color: blue
+                visibility:
+                  - condition: numeric_state
+                    entity: sensor.serra_comandi_in_coda
+                    above: 0
+
+      # ---------------------------------------------------------------------
+      #  Irrigazione
+      # ---------------------------------------------------------------------
+      - type: grid
+        cards:
+          - type: heading
+            heading: Irrigazione
+            icon: mdi:sprinkler-variant
+
+          # Il nodo dorme: un comando premuto ora verra' eseguito al risveglio.
+          # Senza dirlo esplicitamente, la dashboard sembrerebbe rotta.
+          - type: custom:mushroom-template-card
+            primary: Comando in attesa
+            secondary: >-
+              {{ states('sensor.serra_comandi_in_coda') }} in coda · esecuzione entro
+              {{ (states('number.serra_intervallo_risveglio') | int(900) / 60) | round(0) }} min
+            icon: mdi:progress-clock
+            icon_color: blue
+            visibility:
+              - condition: numeric_state
+                entity: sensor.serra_comandi_in_coda
+                above: 0
+
+          - type: horizontal-stack
+            cards:
+              - type: custom:mushroom-entity-card
+                entity: button.serra_irriga_ora
+                name: Irriga ora
+                icon: mdi:sprinkler
+                icon_color: blue
+                tap_action:
+                  action: toggle
+              - type: custom:mushroom-entity-card
+                entity: button.serra_blocca_irrigazione_per_oggi
+                name: Blocca oggi
+                icon: mdi:water-off
+                icon_color: red
+                tap_action:
+                  action: toggle
+
+          - type: custom:mushroom-entity-card
+            entity: switch.serra_irrigazione_automatica
+            name: Programmazione automatica
+            secondary_info: none
+            icon: mdi:calendar-clock
+
+          - type: custom:mushroom-number-card
+            entity: number.serra_durata_irrigazione
+            name: Durata
+            display_mode: buttons
+            icon: mdi:timer-sand
+
+          - type: custom:mushroom-number-card
+            entity: number.serra_soglia_umidita_terreno
+            name: Irriga solo se il terreno e' sotto
+            display_mode: slider
+            icon: mdi:water-alert
+
+          - type: entities
+            entities:
+              - entity: time.serra_orario_irrigazione
+                name: Orario programmato
+              - entity: sensor.serra_esito_irrigazione
+                name: Esito ultimo ciclo
+
+      # ---------------------------------------------------------------------
+      #  Acqua
+      # ---------------------------------------------------------------------
+      - type: grid
+        cards:
+          - type: heading
+            heading: Acqua
+            icon: mdi:water
+
+          - type: custom:mushroom-template-card
+            primary: >-
+              {{ states('sensor.acqua_serra_oggi') | float(0) | round(1) }} L oggi
+            secondary: >-
+              {{ states('sensor.acqua_serra_questo_mese') | float(0) | round(1) }} L questo mese ·
+              {{ states('sensor.serra_acqua_totale') | float(0) | round(0) }} L totali
+            icon: mdi:water-pump
+            icon_color: blue
+            multiline_secondary: true
+
+          - type: custom:apexcharts-card
+            graph_span: 14d
+            header:
+              show: true
+              title: Acqua per giorno
+              show_states: false
+            apex_config:
+              chart:
+                height: 200
+              plotOptions:
+                bar:
+                  columnWidth: 60%
+            series:
+              - entity: sensor.serra_acqua_totale
+                name: Litri
+                type: column
+                group_by:
+                  func: diff
+                  duration: 1d
+
+      # ---------------------------------------------------------------------
+      #  Terreno
+      # ---------------------------------------------------------------------
+      - type: grid
+        cards:
+          - type: heading
+            heading: Umidita' del terreno
+            icon: mdi:water-percent
+
+          - type: horizontal-stack
+            cards:
+              - type: gauge
+                entity: sensor.serra_umidita_terreno_1
+                name: Zona 1
+                min: 0
+                max: 100
+                needle: true
+                severity: { green: 40, yellow: 20, red: 0 }
+              - type: gauge
+                entity: sensor.serra_umidita_terreno_2
+                name: Zona 2
+                min: 0
+                max: 100
+                needle: true
+                severity: { green: 40, yellow: 20, red: 0 }
+
+          - type: custom:apexcharts-card
+            graph_span: 7d
+            header:
+              show: true
+              title: Terreno negli ultimi 7 giorni
+              show_states: true
+              colorize_states: true
+            apex_config:
+              chart:
+                height: 240
+              legend:
+                show: true
+            # La linea tratteggiata e' la soglia sotto la quale il nodo irriga:
+            # cosi' si vede subito se le zone ci arrivano davvero.
+            series:
+              - entity: sensor.serra_umidita_terreno_1
+                name: Zona 1
+                stroke_width: 2
+              - entity: sensor.serra_umidita_terreno_2
+                name: Zona 2
+                stroke_width: 2
+              - entity: number.serra_soglia_umidita_terreno
+                name: Soglia
+                stroke_width: 1
+                curve: stepline
+                opacity: 0.5
+
+      # ---------------------------------------------------------------------
+      #  Clima
+      # ---------------------------------------------------------------------
+      - type: grid
+        column_span: 2
+        cards:
+          - type: heading
+            heading: Clima
+            icon: mdi:thermometer
+
+          - type: custom:apexcharts-card
+            graph_span: 2d
+            header:
+              show: true
+              title: Temperatura, umidita' e VPD
+              show_states: true
+              colorize_states: true
+            apex_config:
+              chart:
+                height: 280
+              legend:
+                show: true
+            yaxis:
+              - id: gradi
+                min: ~0
+                apex_config:
+                  title: { text: "°C / %" }
+              - id: vpd
+                opposite: true
+                min: 0
+                max: 3
+                apex_config:
+                  title: { text: "kPa" }
+            series:
+              - entity: sensor.serra_temperatura
+                name: Temperatura
+                yaxis_id: gradi
+                stroke_width: 2
+              - entity: sensor.serra_umidita_aria
+                name: Umidita'
+                yaxis_id: gradi
+                stroke_width: 2
+                opacity: 0.6
+              - entity: sensor.serra_vpd
+                name: VPD
+                yaxis_id: vpd
+                stroke_width: 2
+                curve: smooth
+
+          - type: custom:apexcharts-card
+            graph_span: 3d
+            header:
+              show: true
+              title: Luce e batteria
+              show_states: true
+            apex_config:
+              chart:
+                height: 220
+            yaxis:
+              - id: luce
+                min: 0
+                max: 100
+              - id: volt
+                opposite: true
+            series:
+              - entity: sensor.serra_luce
+                name: Luce
+                yaxis_id: luce
+                type: area
+                opacity: 0.3
+              - entity: sensor.serra_tensione_batteria
+                name: Batteria
+                yaxis_id: volt
+                stroke_width: 2
+
+  # =========================================================================
+  #  VISTA 2 — Diagnostica
+  # =========================================================================
+  - title: Diagnostica
+    path: diagnostica
+    icon: mdi:stethoscope
+    type: sections
+    max_columns: 2
+
+    sections:
+      - type: grid
+        cards:
+          - type: heading
+            heading: Nodo serra
+            icon: mdi:chip
+          - type: entities
+            entities:
+              - entity: sensor.serra_firmware_nodo
+              - entity: sensor.serra_ora_nodo
+                name: Orologio del nodo
+              - entity: sensor.serra_motivo_ultimo_riavvio
+              - entity: sensor.serra_record_in_backlog
+              - entity: sensor.serra_pacchetto_troncato
+              - entity: sensor.serra_segnale_lora
+              - entity: sensor.serra_snr_lora
+              - entity: number.serra_intervallo_risveglio
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Ponte in camera
+            icon: mdi:radio-tower
+          - type: entities
+            entities:
+              - entity: binary_sensor.serra_ponte_online
+              - entity: sensor.serra_ponte_uptime
+              - entity: sensor.serra_ponte_segnale_wifi
+              - entity: sensor.serra_ponte_memoria_libera
+              - entity: sensor.serra_pacchetti_ricevuti
+              - entity: sensor.serra_comandi_consegnati
+              - entity: sensor.serra_esito_ultimo_comando
+
+      - type: grid
+        column_span: 2
+        cards:
+          - type: heading
+            heading: Manutenzione
+            icon: mdi:tools
+          - type: horizontal-stack
+            cards:
+              - type: custom:mushroom-entity-card
+                entity: button.serra_finestra_manutenzione_2_min
+                name: Resta sveglio
+                icon: mdi:sleep-off
+                tap_action: { action: toggle }
+              - type: custom:mushroom-entity-card
+                entity: button.serra_svuota_backlog
+                name: Svuota backlog
+                icon: mdi:database-remove
+                tap_action: { action: toggle }
+              - type: custom:mushroom-entity-card
+                entity: button.serra_riavvia_nodo_serra
+                name: Riavvia nodo
+                icon: mdi:restart
+                icon_color: red
+                tap_action: { action: toggle }
+
+          - type: custom:apexcharts-card
+            graph_span: 2d
+            header:
+              show: true
+              title: Qualita' del collegamento LoRa
+            apex_config:
+              chart:
+                height: 200
+            series:
+              - entity: sensor.serra_segnale_lora
+                name: RSSI
+                stroke_width: 2
+              - entity: sensor.serra_snr_lora
+                name: SNR
+                stroke_width: 2

@@ -1,0 +1,272 @@
+# ============================================================================
+#  SERRA SMART — package Home Assistant
+# ============================================================================
+#
+#  COME INSTALLARLO
+#  ----------------
+#  1. In configuration.yaml aggiungi (una sola volta):
+#
+#         homeassistant:
+#           packages: !include_dir_named packages
+#
+#  2. Copia questo file in  <config>/packages/serra.yaml
+#  3. Ricarica: Strumenti per sviluppatori -> YAML -> "Ricarica tutto"
+#
+#  COSA CONTIENE
+#  -------------
+#  I sensori e i comandi principali NON sono qui: arrivano da soli via MQTT
+#  Discovery dal ponte. Qui c'e' solo quello che la discovery non puo' fare:
+#  contatori derivati, sensori calcolati e automazioni di allarme.
+#
+#  ATTENZIONE AGLI ENTITY ID
+#  -------------------------
+#  Home Assistant li genera da "nome dispositivo + nome entita'", quindi
+#  dovrebbero corrispondere a quelli usati qui. Verificali comunque in
+#  Strumenti per sviluppatori -> Stati filtrando per "serra", e correggili
+#  se il tuo Home Assistant li ha numerati diversamente (_2 in coda e simili).
+# ============================================================================
+
+# ---------------------------------------------------------------------------
+#  Contatori dell'acqua
+# ---------------------------------------------------------------------------
+#  Il nodo trasmette solo il totale cumulativo (acquaTot): i totali giornaliero
+#  e mensile li calcola Home Assistant, che lo fa molto meglio e senza occupare
+#  byte preziosi nel pacchetto LoRa.
+
+utility_meter:
+  acqua_serra_giornaliera:
+    name: Acqua serra oggi
+    source: sensor.serra_acqua_totale
+    cycle: daily
+
+  acqua_serra_mensile:
+    name: Acqua serra questo mese
+    source: sensor.serra_acqua_totale
+    cycle: monthly
+
+# ---------------------------------------------------------------------------
+#  Sensori MQTT aggiuntivi (quelli che la discovery non genera)
+# ---------------------------------------------------------------------------
+
+mqtt:
+  sensor:
+    # Momento esatto in cui il ponte ha ricevuto l'ultimo pacchetto.
+    # Piu' affidabile di last_changed: quello si aggiorna solo quando il valore
+    # cambia, quindi con una temperatura stabile sembrerebbe che il nodo sia
+    # muto da ore.
+    - name: "Serra ultimo contatto"
+      unique_id: serra_ultimo_contatto
+      state_topic: "serra/nodo/stato"
+      value_template: >-
+        {{ (value_json.ts_ponte | int(0)) | timestamp_utc }}
+      device_class: timestamp
+      availability_topic: "serra/ponte/stato"
+      icon: mdi:clock-check-outline
+
+    # Ora dichiarata dal NODO: se resta a 1970 vuol dire che il DS1307 ha perso
+    # l'ora e non e' ancora stato risincronizzato dal ponte.
+    - name: "Serra ora del nodo"
+      unique_id: serra_ora_nodo
+      state_topic: "serra/nodo/stato"
+      value_template: >-
+        {% set t = value_json.t | int(0) %}
+        {{ '' if t == 0 else (t | timestamp_utc) }}
+      device_class: timestamp
+      availability_topic: "serra/ponte/stato"
+      entity_category: diagnostic
+      icon: mdi:clock-alert-outline
+
+# ---------------------------------------------------------------------------
+#  Sensori calcolati
+# ---------------------------------------------------------------------------
+
+template:
+  - sensor:
+      # --- VPD: deficit di pressione di vapore --------------------------------
+      # E' il parametro agronomico che conta davvero in serra, molto piu' della
+      # sola umidita' relativa: dice quanta "sete d'aria" hanno le piante.
+      # Indicativamente: < 0,4 kPa troppo umido (rischio funghi),
+      # 0,8-1,2 kPa ideale in vegetazione, > 1,6 kPa stress idrico.
+      - name: "Serra VPD"
+        unique_id: serra_vpd
+        unit_of_measurement: "kPa"
+        state_class: measurement
+        icon: mdi:water-thermometer
+        availability: >-
+          {{ states('sensor.serra_temperatura') not in ['unknown','unavailable','']
+             and states('sensor.serra_umidita_aria') not in ['unknown','unavailable',''] }}
+        state: >-
+          {% set t  = states('sensor.serra_temperatura')  | float(0) %}
+          {% set rh = states('sensor.serra_umidita_aria') | float(0) %}
+          {% set es = 0.6108 * e ** (17.27 * t / (t + 237.3)) %}
+          {{ (es * (1 - rh / 100)) | round(2) }}
+
+      # --- Minuti dall'ultimo contatto ---------------------------------------
+      - name: "Serra minuti dall'ultimo contatto"
+        unique_id: serra_minuti_silenzio
+        unit_of_measurement: "min"
+        state_class: measurement
+        icon: mdi:timer-sand
+        entity_category: diagnostic
+        state: >-
+          {% set t = states('sensor.serra_ultimo_contatto') %}
+          {% if t in ['unknown','unavailable',''] %}
+            {{ 9999 }}
+          {% else %}
+            {{ ((now() - (t | as_datetime)).total_seconds() / 60) | round(0) }}
+          {% endif %}
+
+      # --- Stato sintetico, per la testata della dashboard --------------------
+      - name: "Serra stato generale"
+        unique_id: serra_stato_generale
+        icon: mdi:greenhouse
+        state: >-
+          {% set silenzio = states('sensor.serra_minuti_silenzio') | int(9999) %}
+          {% set batt     = states('sensor.serra_tensione_batteria') | float(99) %}
+          {% set coda     = states('sensor.serra_comandi_in_coda') | int(0) %}
+          {% set backlog  = states('sensor.serra_record_in_backlog') | int(0) %}
+          {% if states('binary_sensor.serra_ponte_online') == 'off' %} Ponte offline
+          {% elif silenzio > 120 %} Nodo non risponde
+          {% elif batt < 11.0 %} Batteria scarica
+          {% elif backlog > 10 %} Dati in attesa
+          {% elif coda > 0 %} Comando in coda
+          {% else %} Tutto ok
+          {% endif %}
+        attributes:
+          minuti_silenzio: "{{ states('sensor.serra_minuti_silenzio') | int(9999) }}"
+          comandi_in_coda: "{{ states('sensor.serra_comandi_in_coda') | int(0) }}"
+
+  - binary_sensor:
+      - name: "Serra ponte online"
+        unique_id: serra_ponte_online
+        device_class: connectivity
+        state: "{{ states('sensor.serra_ponte_uptime') not in ['unknown','unavailable'] }}"
+
+      # --- Anomalia idraulica: valvola aperta ma nessuna acqua ---------------
+      # E' l'allarme piu' utile che il flussometro rende possibile: pompa
+      # guasta, serbatoio vuoto, filtro otturato o tubo staccato.
+      - name: "Serra anomalia irrigazione"
+        unique_id: serra_anomalia_irrigazione
+        device_class: problem
+        icon: mdi:water-alert
+        state: "{{ states('sensor.serra_esito_irrigazione') == 'nessun_flusso' }}"
+
+# ---------------------------------------------------------------------------
+#  Automazioni
+# ---------------------------------------------------------------------------
+#  Le notifiche usano persistent_notification, che c'e' sempre. Per riceverle
+#  sul telefono sostituisci l'azione con:
+#      action: notify.mobile_app_<nome_del_tuo_telefono>
+#      data: { title: "...", message: "..." }
+
+automation:
+  # --- Batteria scarica ------------------------------------------------------
+  - id: serra_batteria_scarica
+    alias: "Serra - Batteria scarica"
+    description: "Avvisa quando la tensione della batteria scende sotto 11,2 V"
+    mode: single
+    triggers:
+      - trigger: numeric_state
+        entity_id: sensor.serra_tensione_batteria
+        below: 11.2
+        for: "00:30:00"
+    actions:
+      - action: persistent_notification.create
+        data:
+          title: "Serra: batteria scarica"
+          message: >-
+            La batteria della serra e' a {{ states('sensor.serra_tensione_batteria') }} V.
+            Sotto gli 11 V il nodo potrebbe non riuscire piu' a trasmettere.
+          notification_id: serra_batteria
+
+  # --- Nodo muto -------------------------------------------------------------
+  - id: serra_nodo_muto
+    alias: "Serra - Nessun dato dal nodo"
+    description: "Avvisa se non arrivano pacchetti da oltre 2 ore"
+    mode: single
+    triggers:
+      - trigger: numeric_state
+        entity_id: sensor.serra_minuti_silenzio
+        above: 120
+    conditions:
+      - condition: state
+        entity_id: binary_sensor.serra_ponte_online
+        state: "on"    # se e' giu' il ponte il problema e' un altro
+    actions:
+      - action: persistent_notification.create
+        data:
+          title: "Serra: nodo silenzioso"
+          message: >-
+            Nessun dato dalla serra da {{ states('sensor.serra_minuti_silenzio') }} minuti.
+            Controlla alimentazione del nodo, antenna LoRa e batteria.
+          notification_id: serra_muto
+
+  # --- Anomalia idraulica ----------------------------------------------------
+  - id: serra_nessun_flusso
+    alias: "Serra - Irrigazione senza flusso d'acqua"
+    description: "La valvola si e' aperta ma il flussometro non ha contato nulla"
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.serra_anomalia_irrigazione
+        to: "on"
+    actions:
+      - action: persistent_notification.create
+        data:
+          title: "Serra: irrigazione a vuoto"
+          message: >-
+            La valvola si e' aperta ma non e' passata acqua.
+            Possibili cause: serbatoio vuoto, pompa guasta, filtro otturato,
+            tubo staccato, oppure il flussometro si e' scollegato.
+          notification_id: serra_flusso
+
+  # --- Backlog che cresce ----------------------------------------------------
+  - id: serra_backlog_alto
+    alias: "Serra - Backlog in crescita"
+    description: "Il nodo sta accumulando dati non consegnati"
+    mode: single
+    triggers:
+      - trigger: numeric_state
+        entity_id: sensor.serra_record_in_backlog
+        above: 50
+        for: "01:00:00"
+    actions:
+      - action: persistent_notification.create
+        data:
+          title: "Serra: dati in attesa"
+          message: >-
+            Ci sono {{ states('sensor.serra_record_in_backlog') }} record sulla
+            microSD che non riescono ad arrivare. Il collegamento LoRa e' debole
+            o il ponte ha problemi con MQTT.
+          notification_id: serra_backlog
+
+  # --- Comando eseguito ------------------------------------------------------
+  # Conferma visibile: i comandi vengono eseguiti al risveglio successivo del
+  # nodo, quindi senza un riscontro esplicito sembrerebbe che non sia successo nulla.
+  - id: serra_comando_eseguito
+    alias: "Serra - Esito comando"
+    description: "Notifica quando il nodo ha eseguito un comando"
+    mode: queued
+    max: 10
+    triggers:
+      - trigger: mqtt
+        topic: "serra/nodo/cmd/res"
+    actions:
+      - choose:
+          - conditions: "{{ trigger.payload_json.ok }}"
+            sequence:
+              - action: persistent_notification.create
+                data:
+                  title: "Serra: comando eseguito"
+                  message: "Esito: {{ trigger.payload_json.esito }}"
+                  notification_id: serra_cmd
+        default:
+          - action: persistent_notification.create
+            data:
+              title: "Serra: comando RIFIUTATO"
+              message: >-
+                Il nodo ha rifiutato il comando: {{ trigger.payload_json.esito }}
+                (codice {{ trigger.payload_json.rc }}).
+                Codici: 1 = opcode sconosciuto, 2 = argomenti errati,
+                3 = bloccato da un limite di sicurezza, 4 = hardware assente.
+              notification_id: serra_cmd

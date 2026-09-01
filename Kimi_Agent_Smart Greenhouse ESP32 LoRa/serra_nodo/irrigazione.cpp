@@ -202,6 +202,11 @@ EsitoIrrigazione irrigazioneEsegui(uint32_t durataSec, float litriTarget, uint32
   g_litriUltima = litri;
   g_eseguitaOra = true;
 
+  // Il terreno e' appena cambiato: la lettura memorizzata non vale piu' e la
+  // composizione del pacchetto ne fara' una nuova. E' l'unico caso in cui la
+  // seconda accensione del rail dei sensori serve davvero.
+  sensoriInvalidaCache();
+
   wdtRimuoviTask();
   wdtImposta(WDT_SETUP_SEC);   // si torna al watchdog "normale" del ciclo
 

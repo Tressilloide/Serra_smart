@@ -97,13 +97,20 @@ uint8_t sensoriInit();
 // Va chiamata PRIMA di decidere se irrigare.
 float sensoriSoilMin();
 
+// Scarta le letture del terreno memorizzate, forzando una nuova misura.
+// Da chiamare dopo un'irrigazione: e' l'unico momento in cui il valore cambia
+// davvero, e rileggere serve a verificare che l'acqua sia arrivata.
+void sensoriInvalidaCache();
+
 // Legge tutti i sensori abilitati e li accoda al pacchetto come chiave=valore.
 // I sensori assenti vengono inviati come -127 (sentinella "non disponibile").
 void sensoriLeggiTutti(PacchettoKV& pkt);
 
-// Accende/spegne il rail dei sensori (MOSFET su PIN_PWR_SENSORI).
+// Accende/spegne il rail dei sensori tramite PIN_PWR_SENSORI (relay o MOSFET).
 // I sensori terreno resistivi si corrodono se tenuti sempre alimentati:
 // vengono accesi solo per il tempo della misura.
+// Se PIN_PWR_SENSORI vale -1 la funzione non fa nulla e i sensori restano
+// costantemente alimentati: e' la configurazione attuale.
 void sensoriAlimenta(bool acceso);
 
 // Cerca un sensore per chiave. Ritorna l'indice o -1.

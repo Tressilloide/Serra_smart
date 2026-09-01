@@ -173,17 +173,50 @@
 #define PIN_SOIL3 36     // Riserva (VP, solo input)
 #define PIN_SOIL4 39     // Riserva (VN, solo input)
 
-// --- Flussometro e alimentazione commutata dei sensori ---
-// ATTENZIONE MODULI WROVER: sui moduli ESP32-WROVER i GPIO 16 e 17 sono
-// occupati dalla PSRAM e NON sono utilizzabili. Il firmware lo rileva al boot
-// con psramFound() e stampa un avviso. In quel caso usa le alternative:
-//   PIN_FLUSSO -> 15   |   PIN_PWR_SENSORI -> 2
+// --- Flussometro ---
+// ATTENZIONE MODULI WROVER: sui moduli ESP32-WROVER il GPIO 17 e' occupato
+// dalla PSRAM e NON e' utilizzabile. Il firmware lo rileva al boot con
+// psramFound() e stampa un avviso: in quel caso serve un pin alternativo.
 #define PIN_FLUSSO       17   // Impulsi YF-S201 (interrupt su fronte di discesa)
-#define PIN_PWR_SENSORI  16   // Gate del MOSFET che alimenta i sensori terreno.
-                              // -1 per alimentarli permanentemente (sconsigliato:
-                              // i sensori resistivi si corrodono in poche settimane)
-#define PWR_SENSORI_ON   HIGH
-#define PWR_SETTLE_MS    250  // Attesa dopo l'accensione, prima di leggere
+
+// --- Alimentazione commutata dei sensori terreno ---
+//
+// I sensori resistivi a due punte si corrodono per elettrolisi se lasciati
+// sotto tensione: vanno alimentati solo per il tempo della misura. Servono
+// quindi un interruttore comandato dall'ESP32 e questo pin per pilotarlo.
+//
+// Puoi usare indifferentemente:
+//   - un MOSFET P lato alto sul rail 3,3 V  -> PWR_SENSORI_ON = HIGH
+//   - un canale libero del modulo relay     -> PWR_SENSORI_ON = LOW
+//     (i moduli relay comuni sono ATTIVI BASSI, come quello dell'irrigazione)
+// Metti -1 per alimentarli in permanenza: funziona, ma i sensori durano
+// poche settimane.
+//
+// Perche' GPIO 15 e non 16: il 15 appartiene al dominio RTC, quindi il suo
+// livello puo' essere MANTENUTO durante il deep sleep invece di restare
+// flottante per 15 minuti con il relay che potrebbe eccitarsi da solo.
+// In piu' al reset ha un pull-up interno, quindi si presenta ALTO: con un
+// relay attivo basso questo significa "spento" gia' prima che parta il
+// firmware, senza bisogno di resistenze esterne.
+// >>> ATTUALMENTE DISATTIVATA: i sensori restano sempre alimentati. <<<
+//
+// Per attivarla basta rimettere 15 al posto di -1 e cablare l'interruttore:
+// tutto il resto del codice e' gia' pronto e condizionato a questo valore.
+//
+// ATTENZIONE, il motivo per cui esiste NON e' il consumo: alimentare due
+// sensori costa una manciata di milliampere, del tutto trascurabili accanto
+// agli ~80 mA che l'ESP32 assorbe da sveglio. Il motivo e' la CORROSIONE:
+// i sensori resistivi a due punte, tenuti costantemente sotto tensione, si
+// consumano per elettrolisi e in poche settimane iniziano a dare letture
+// sbagliate, per poi smettere del tutto.
+// Il sintomo da tenere d'occhio non e' quindi la batteria che cala, ma
+// l'umidita' del terreno che deriva verso valori sempre piu' bassi e
+// incoerenti tra i due sensori. Vedi docs/PINOUT.md 2.1.1.
+#define PIN_PWR_SENSORI  -1
+#define PWR_SENSORI_ON   LOW  // LOW = modulo relay (attivo basso). HIGH = MOSFET P.
+#define PWR_SETTLE_MS    250  // Attesa dopo l'accensione, prima di leggere.
+                              // Copre sia l'attuazione del relay (~10 ms) sia
+                              // l'assestamento del partitore del sensore.
 
 // Il sensore terreno va alimentato a 3,3 V e NON a 5 V: la sua uscita analogica
 // segue la tensione di alimentazione e a 5 V danneggerebbe l'ADC dell'ESP32.

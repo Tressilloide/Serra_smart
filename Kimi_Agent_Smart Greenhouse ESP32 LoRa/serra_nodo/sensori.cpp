@@ -3,6 +3,7 @@
 #include "irrigazione.h"
 
 #include <Wire.h>
+#include <driver/gpio.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BME280.h>
 
@@ -27,11 +28,17 @@ void sensoriAlimenta(bool acceso) {
 #if PIN_PWR_SENSORI >= 0
   static bool inizializzato = false;
   if (!inizializzato) {
+    // Sblocca il mantenimento impostato prima del deep sleep, poi scrive il
+    // livello di riposo PRIMA di configurare il pin come uscita: cosi' un
+    // relay attivo basso non riceve mai un impulso spurio all'avvio.
+    gpio_hold_dis((gpio_num_t)PIN_PWR_SENSORI);
+    digitalWrite(PIN_PWR_SENSORI, !PWR_SENSORI_ON);
     pinMode(PIN_PWR_SENSORI, OUTPUT);
+    digitalWrite(PIN_PWR_SENSORI, !PWR_SENSORI_ON);
     inizializzato = true;
   }
   digitalWrite(PIN_PWR_SENSORI, acceso ? PWR_SENSORI_ON : !PWR_SENSORI_ON);
-  if (acceso) delay(PWR_SETTLE_MS);   // il partitore del sensore deve assestarsi
+  if (acceso) delay(PWR_SETTLE_MS);   // attuazione relay + assestamento partitore
 #else
   (void)acceso;
 #endif
@@ -234,9 +241,30 @@ static float leggiTensione(void*) {
  * sensore si comporta al contrario basta invertire i due valori di calibrazione
  * con il comando CAL: la formula funziona in entrambi i versi.
  */
+/*
+ * Cache delle letture del terreno.
+ *
+ * Il terreno viene letto due volte per risveglio: una prima dell'irrigazione
+ * (per decidere se serve) e una durante la composizione del pacchetto. Sono
+ * due accensioni del rail dei sensori a distanza di pochi secondi, con valori
+ * praticamente identici.
+ *
+ * Se l'interruttore e' un MOSFET la cosa e' gratis, ma con un canale di relay
+ * significa il doppio degli scatti: circa 70.000 all'anno invece di 35.000.
+ * La cache elimina la seconda accensione, e viene invalidata dopo
+ * un'irrigazione — l'unico momento in cui il valore cambia davvero e in cui
+ * rileggere ha senso, perche' serve a verificare che l'acqua sia arrivata.
+ */
+static float s_soilCache[4];
+static bool  s_soilCacheValida = false;
+
+void sensoriInvalidaCache() { s_soilCacheValida = false; }
+
 static float leggiPercentuale(void* ctx) {
   CtxAnalogico* c = (CtxAnalogico*)ctx;
   if (!c) return NAN;
+
+  if (s_soilCacheValida && c->indiceCal < 4) return s_soilCache[c->indiceCal];
 
   float secco   = (float)g_cfg.soilSecco[c->indiceCal];
   float bagnato = (float)g_cfg.soilBagnato[c->indiceCal];
@@ -249,6 +277,8 @@ static float leggiPercentuale(void* ctx) {
 
   if (pct < 0.0f)   pct = 0.0f;
   if (pct > 100.0f) pct = 100.0f;
+
+  if (c->indiceCal < 4) s_soilCache[c->indiceCal] = pct;
   return pct;
 }
 
@@ -383,6 +413,11 @@ float sensoriSoilMin() {
   sensoriAlimenta(false);
 
   if (!trovato) return NAN;
+
+  // Da qui in poi le letture sono in cache: la composizione del pacchetto,
+  // pochi secondi dopo, non riaccendera' il rail una seconda volta.
+  s_soilCacheValida = true;
+
   Serial.printf("[SENS] Terreno piu' secco: %.1f%%\n", minimo);
   return minimo;
 #else
@@ -394,10 +429,13 @@ void sensoriLeggiTutti(PacchettoKV& pkt) {
   // I sensori terreno vengono alimentati solo per il tempo della misura:
   // i resistivi a due punte si corrodono se lasciati costantemente sotto
   // tensione, e in poche settimane diventano inutilizzabili.
+  // Se le letture del terreno sono gia' in cache non serve riaccendere nulla:
+  // con un canale di relay questo dimezza gli scatti.
   bool serveAlimentazione = false;
-  for (uint8_t i = 0; i < N_SENSORI; i++)
-    if (SENSORI[i].leggi == leggiPercentuale && sensoreAbilitato(SENSORI[i].bit))
-      serveAlimentazione = true;
+  if (!s_soilCacheValida)
+    for (uint8_t i = 0; i < N_SENSORI; i++)
+      if (SENSORI[i].leggi == leggiPercentuale && sensoreAbilitato(SENSORI[i].bit))
+        serveAlimentazione = true;
 
   if (serveAlimentazione) sensoriAlimenta(true);
 

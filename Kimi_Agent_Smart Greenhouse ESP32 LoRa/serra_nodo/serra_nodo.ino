@@ -269,6 +269,16 @@ static void vaiInDeepSleep() {
   // GPIO25 e' nel dominio RTC: mantiene ATTIVAMENTE il livello OFF del relay
   // per tutta la durata del sonno, invece di lasciarlo flottante.
   gpio_hold_en((gpio_num_t)PIN_RELAY);
+
+  // Stesso trattamento per l'interruttore dei sensori: se e' un canale di
+  // relay, lasciarlo flottante per 15 minuti significa rischiare che si
+  // ecciti da solo e tenga i sensori sotto tensione per tutta la notte,
+  // cioe' esattamente quello che l'alimentazione commutata deve evitare.
+  // Funziona perche' anche GPIO 15 appartiene al dominio RTC.
+#if PIN_PWR_SENSORI >= 0
+  gpio_hold_en((gpio_num_t)PIN_PWR_SENSORI);
+#endif
+
   gpio_deep_sleep_hold_en();
 
   esp_sleep_enable_timer_wakeup((uint64_t)sleepSec * 1000000ULL);
@@ -307,7 +317,7 @@ void setup() {
   if (psramFound()) {
     Serial.println(F("[HW] ATTENZIONE: questa scheda ha PSRAM (modulo WROVER)."));
     Serial.println(F("[HW] I GPIO 16 e 17 sono usati dalla PSRAM e NON sono disponibili."));
-    Serial.println(F("[HW] In config.h usa PIN_FLUSSO 15 e PIN_PWR_SENSORI 2."));
+    Serial.println(F("[HW] In config.h sposta PIN_FLUSSO su 39 (vedi docs/PINOUT.md)."));
   }
 #endif
 

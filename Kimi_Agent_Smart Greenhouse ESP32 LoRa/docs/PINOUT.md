@@ -26,9 +26,10 @@ Riferimento: [`serra_nodo/config.h`](../serra_nodo/config.h) e
 | Umidità terreno 2 | 35 | ADC1, **solo input** |
 | *(riserva analogica)* | 36 (VP), 39 (VN) | ADC1, solo input |
 | Flussometro YF-S201 | 17 | Interrupt su fronte di discesa |
-| Alimentazione sensori | 16 | Gate del MOSFET |
+| Alimentazione sensori | 15 | *Predisposto ma **non attivo**, vedi 2.1.1* |
 
-Restano liberi: **15** (strapping, usare con cautela), **2**, **0**.
+Restano liberi: **15** (finche' l'alimentazione commutata resta disattivata),
+**16**, **2**, **0**.
 
 ---
 
@@ -44,7 +45,7 @@ Il modulo dichiara 3,3–12 V, quindi alimentarlo a 3,3 V è nelle specifiche.
 
 ```
 Modulo terreno        ESP32
-  VCC  ────────────►  rail 3,3 V commutato (drain del MOSFET)
+  VCC  ────────────►  rail 3,3 V commutato (vedi 2.1.1)
   GND  ────────────►  GND
   AO   ────────────►  GPIO 34  (e GPIO 35 per il secondo)
   DO   ─────  non collegato
@@ -55,12 +56,66 @@ modulo, è imprecisa e va rifatta a mano a ogni cambio di terreno. L'uscita
 analogica con calibrazione software (comando `CAL`) è più affidabile e si
 regola da Home Assistant senza toccare nulla.
 
-**Alimentazione commutata — non è un dettaglio.** I sensori a due punte
-metalliche sono resistivi: sotto tensione continua le punte si **corrodono per
-elettrolisi** e in poche settimane diventano inutilizzabili. Il firmware
-accende il rail solo per la frazione di secondo della misura
-(`PWR_SETTLE_MS`, 250 ms) e lo spegne subito. Con due sensori il consumo di
-picco è di circa 16 mA.
+#### 2.1.1 Alimentazione commutata — predisposta ma disattivata
+
+> **Stato attuale: `PIN_PWR_SENSORI` vale `-1`**, quindi i sensori restano
+> costantemente alimentati e non serve cablare nessun interruttore.
+> Il codice c'è tutto ed è condizionato a quel valore: per attivarla basta
+> rimettere `15` in `config.h` e collegare il relay o il MOSFET.
+
+I sensori a due punte metalliche sono resistivi: sotto tensione continua le
+punte si **corrodono per elettrolisi** e in poche settimane iniziano a dare
+letture sbagliate, per poi smettere del tutto.
+
+**Il motivo non è il consumo.** Due sensori assorbono circa 16 mA, del tutto
+trascurabili accanto agli ~80 mA che l'ESP32 assorbe mentre è sveglio, e in
+ogni caso solo per i pochi secondi del risveglio. Il motivo è la durata delle
+sonde.
+
+Il sintomo da tenere d'occhio quindi non è la batteria che cala prima del
+previsto, ma **l'umidità del terreno che deriva verso valori sempre più bassi
+e che i due sensori smettono di concordare fra loro**. Quando succede, o
+sostituisci le sonde o attivi l'alimentazione commutata (meglio entrambe).
+
+Se e quando decidi di attivarla, servono un interruttore comandato dall'ESP32
+e il pin `PIN_PWR_SENSORI` (GPIO 15) per pilotarlo. Vanno bene entrambe le
+soluzioni qui sotto.
+
+**Opzione A — un canale libero del modulo relay** (nessun componente da comprare)
+
+Se il tuo modulo relay ha quattro canali e ne usi uno solo per l'irrigazione,
+un secondo canale fa benissimo da interruttore:
+
+```
+  Modulo relay                         Sensori terreno
+    IN2   ◄──────── GPIO 15
+    COM2  ◄──────── 3,3 V dell'ESP32
+    NO2   ────────────────────────────► VCC di entrambi i sensori
+```
+
+Usa il contatto **NO** (normalmente aperto): a relay diseccitato i sensori
+sono spenti, che è lo stato sicuro.
+
+In `config.h` deve esserci `#define PWR_SENSORI_ON LOW`, perché i moduli relay
+comuni sono **attivi bassi** come quello dell'irrigazione. È già il valore
+predefinito.
+
+Tre cose da sapere su questa soluzione:
+
+- **Durata del relay.** Scatta due volte per risveglio, circa 190 volte al
+  giorno. Sembra tanto, ma sta commutando 16 mA a 3,3 V contro i 10 A per cui
+  è costruito: l'usura elettrica dei contatti è praticamente nulla e conta
+  solo quella meccanica, dell'ordine di 10 milioni di manovre. Sono decenni.
+  Il firmware inoltre memorizza la lettura del terreno e la riusa nello stesso
+  risveglio, quindi nella pratica lo scatto è **uno solo**, tranne nel ciclo
+  in cui irriga davvero.
+- **Contatti e correnti basse.** I contatti argentati vogliono una corrente
+  minima per "sfondare" l'ossido che si forma nel tempo. 16 mA è nella fascia
+  bassa: se dopo qualche mese le letture del terreno diventassero
+  intermittenti, è questa la causa, e la soluzione è passare a un MOSFET.
+- **Rumore.** Sentirai un clic in serra a ogni risveglio. Innocuo.
+
+**Opzione B — MOSFET P lato alto** (la soluzione pulita)
 
 ```
         3,3 V
@@ -71,12 +126,20 @@ picco è di circa 16 mA.
           │
           └────────► VCC dei sensori terreno
 
-  GPIO 16 ──[10k]──► G     (+ resistenza da 100k tra G e S)
+  GPIO 15 ──[10k]──► G     (+ resistenza da 100k tra G e S)
 ```
 
-Un P-MOSFET lato alto è la soluzione pulita. In alternativa, con due soli
-sensori, si può pilotare direttamente il VCC da GPIO 16: è al limite ma
-funziona, a patto di dissaldare i LED di alimentazione dei moduli.
+Con questa opzione metti `#define PWR_SENSORI_ON HIGH` in `config.h`.
+Consumo nullo, nessuna parte in movimento, nessun limite di durata.
+
+> **Perché GPIO 15 e non 16.** GPIO 15 appartiene al dominio RTC, quindi il
+> firmware può **mantenerne** il livello anche durante il deep sleep
+> (`gpio_hold_en`). Con un relay è importante: un pin lasciato flottante per
+> 15 minuti potrebbe farlo eccitare da solo, tenendo i sensori sotto tensione
+> tutta la notte — cioè esattamente quello che l'alimentazione commutata deve
+> evitare. In più GPIO 15 ha un pull-up interno al reset, quindi si presenta
+> ALTO: con un relay attivo basso questo significa "spento" già prima che il
+> firmware parta, senza bisogno di resistenze esterne.
 
 ### 2.2 Flussometro YF-S201 → serve un partitore, l'uscita è a 5 V
 
@@ -91,30 +154,51 @@ Il sensore va alimentato a 5 V e la sua uscita a effetto Hall commuta a 5 V:
             │           │
          (segnale)      └──────────────────►  GPIO 17
                         │
-                       ═╪═ 100 nF
+                       ═╪═ 100 nF  ← FACOLTATIVO, vedi sotto
                         │
                        GND
 ```
 
-Con 10 kΩ / 15 kΩ i 5 V diventano circa 3,0 V: dentro le specifiche. Il
-condensatore da 100 nF filtra il rumore della pompa. In alternativa va bene un
-level shifter bidirezionale.
+Con 10 kΩ / 15 kΩ i 5 V diventano circa 3,0 V: dentro le specifiche.
+In alternativa va bene un level shifter bidirezionale.
+
+**Il condensatore da 100 nF è facoltativo: puoi partire senza.** Serve a
+filtrare i disturbi che la pompa induce sul cavo di segnale, ma il firmware ha
+già un filtro software: l'interrupt scarta gli impulsi che arrivano a meno di
+1 ms l'uno dall'altro (`FLUSSO_MIN_INTERVALLO_US` in `config.h`), mentre alla
+portata massima del YF-S201 gli impulsi veri distano circa 4,4 ms.
+
+Come accorgersi se servisse davvero: il conteggio dei litri risulterebbe
+**più alto** del reale, perché i disturbi vengono contati come impulsi. In quel
+caso, in ordine di efficacia:
+
+1. allontana il cavo del flussometro da quello della pompa, e non farli correre
+   paralleli nella stessa canalina;
+2. alza `FLUSSO_MIN_INTERVALLO_US` a 2000 e riflasha;
+3. aggiungi il condensatore.
+
+Un secondo sintomo, opposto e più insidioso: se il flussometro contasse
+impulsi **a valvola chiusa**, si tratterebbe quasi certamente di disturbi e non
+di una perdita d'acqua — e lì il condensatore serve.
 
 **Calibrazione:** il datasheet dà `F = 7,5 × Q[L/min]`, cioè 450 impulsi/litro,
 ma varia parecchio da esemplare a esemplare. Riempi un contenitore da 1 litro e
 usa il conteggio reale con `CAL,acqua,<impulsi>`.
 
-### 2.3 GPIO 16 e 17 → non disponibili sui moduli WROVER
+### 2.3 GPIO 17 → non disponibile sui moduli WROVER
 
 Sui moduli **ESP32-WROVER** (quelli con PSRAM) i GPIO 16 e 17 sono cablati alla
 memoria PSRAM e non sono utilizzabili. Il firmware lo rileva al boot con
 `psramFound()` e stampa un avviso sul monitor seriale.
 
-In quel caso, in `config.h`:
+Riguarda solo il flussometro, perché l'alimentazione dei sensori sta su
+GPIO 15. Se hai un WROVER, in `config.h` sposta `PIN_FLUSSO` su un pin libero
+con interrupt: **GPIO 4** è già usato dal CS della microSD, quindi la scelta
+più pratica è rinunciare a un canale ADC1 e usare **GPIO 39**, che va bene
+come ingresso digitale.
 
 ```c
-#define PIN_FLUSSO       15
-#define PIN_PWR_SENSORI  2
+#define PIN_FLUSSO  39   // solo su moduli WROVER
 ```
 
 ### 2.4 GPIO 12 (LoRa MISO) → il pin più delicato della scheda

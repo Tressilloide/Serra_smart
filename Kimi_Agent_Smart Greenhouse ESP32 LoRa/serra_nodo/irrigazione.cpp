@@ -180,11 +180,13 @@ EsitoIrrigazione irrigazioneEsegui(uint32_t durataSec, float litriTarget, uint32
        */
       if (trascorso - ultimoLog >= 2000UL) {
         ultimoLog = trascorso;
-        Serial.printf("[IRRIG] %2lus/%lus  impulsi=%lu  %.3f L  pin=%d\n",
+        uint32_t transizioni = flussoSondaTransizioni(200);
+        Serial.printf("[IRRIG] %2lus/%lus  impulsi=%lu  %.3f L  pin=%d  transizioni=%lu\n",
                       (unsigned long)(trascorso / 1000UL),
                       (unsigned long)durataSec,
                       (unsigned long)flussoImpulsi(), litri,
-                      digitalRead(PIN_FLUSSO));
+                      digitalRead(PIN_FLUSSO),
+                      (unsigned long)transizioni);
       }
 
       // Obiettivo volumetrico raggiunto

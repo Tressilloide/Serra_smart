@@ -127,6 +127,11 @@ bool     flussoDisponibile();
 void     flussoAzzera();          // azzera il contatore e attacca l'interrupt
 void     flussoStacca();          // stacca l'interrupt (risparmio in deep sleep)
 uint32_t flussoImpulsi();         // impulsi contati dall'ultimo flussoAzzera()
+
+// Diagnostica: conta i cambi di livello sul pin campionandolo a raffica per
+// durataMs, SENZA passare dall'interrupt. Distingue "nessun segnale sul filo"
+// da "segnale presente ma interrupt che non lo raccoglie".
+uint32_t flussoSondaTransizioni(uint16_t durataMs);
 float    flussoLitri();           // litri corrispondenti, secondo la calibrazione
 
 // ---------------------------------------------------------------------------

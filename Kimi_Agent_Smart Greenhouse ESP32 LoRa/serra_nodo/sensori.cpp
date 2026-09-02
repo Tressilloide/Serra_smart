@@ -139,6 +139,39 @@ void flussoStacca() {
 #endif
 }
 
+/*
+ * Sonda diagnostica: campiona il pin a raffica per qualche decina di
+ * millisecondi e conta i CAMBI DI LIVELLO, senza passare dall'interrupt.
+ *
+ * Serve a distinguere le due cause possibili di "nessun flusso", che dal solo
+ * conteggio degli impulsi sono indistinguibili:
+ *   transizioni = 0  -> sul filo non arriva alcun segnale elettrico: massa
+ *                       non in comune, filo staccato, sensore non alimentato,
+ *                       oppure acqua che non passa davvero
+ *   transizioni > 0 ma impulsi = 0 -> il segnale c'e' ed e' leggibile, ma
+ *                       l'interrupt non lo raccoglie: problema di firmware
+ *
+ * Un solo digitalRead() ogni due secondi non basterebbe: potrebbe capitare
+ * sempre nella stessa meta' dell'onda e far sembrare ferma una linea che
+ * invece commuta.
+ */
+uint32_t flussoSondaTransizioni(uint16_t durataMs) {
+#if USA_FLUSSO
+  int      precedente  = digitalRead(PIN_FLUSSO);
+  uint32_t transizioni = 0;
+  uint32_t t0 = millis();
+
+  while (millis() - t0 < durataMs) {
+    int adesso = digitalRead(PIN_FLUSSO);
+    if (adesso != precedente) { transizioni++; precedente = adesso; }
+  }
+  return transizioni;
+#else
+  (void)durataMs;
+  return 0;
+#endif
+}
+
 uint32_t flussoImpulsi() {
   noInterrupts();
   uint32_t n = s_impulsi;

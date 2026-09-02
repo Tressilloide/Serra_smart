@@ -141,10 +141,43 @@ Consumo nullo, nessuna parte in movimento, nessun limite di durata.
 > ALTO: con un relay attivo basso questo significa "spento" già prima che il
 > firmware parta, senza bisogno di resistenze esterne.
 
-### 2.2 Flussometro YF-S201 → serve un partitore, l'uscita è a 5 V
+### 2.2 Flussometro YF-S201
 
-Il sensore va alimentato a 5 V e la sua uscita a effetto Hall commuta a 5 V:
-**non è collegabile direttamente** a un GPIO dell'ESP32.
+**Collegamento in uso, verificato sul campo:** sensore alimentato a **3,3 V** e
+filo del segnale diritto sul GPIO 17, senza partitore e senza condensatore, con
+il pull-up interno dell'ESP32 attivo (`FLUSSO_PULLUP 1` in `config.h`).
+
+```
+  YF-S201                        ESP32
+   Rosso  ──► 3,3 V ──────────►  3V3
+   Nero   ──► GND ────────────►  GND
+   Giallo ───────────────────►  GPIO 17   (pull-up interno)
+```
+
+**Perché alimentarlo a 3,3 V è la scelta migliore:** in tutto il circuito non
+esiste nessun 5 V, quindi il pin non può ricevere sovratensioni **qualunque
+sia il tipo di uscita del sensore**, open-drain o push-pull. Sparisce l'intera
+questione del partitore o del level shifter, e con essa il rischio più subdolo
+di questo genere di collegamenti — quello che funziona per mesi e poi
+danneggia il GPIO.
+
+> **L'unico compromesso, da conoscere.** Il datasheet del YF-S201 dichiara
+> 5–18 V: a 3,3 V il sensore lavora **fuori specifica**. Funziona (l'hai
+> verificato), ma il margine del sensore di Hall si riduce, e i punti in cui
+> potrebbe cedere sono gli estremi di temperatura — una serra d'inverno sotto
+> zero, o d'estate sopra i 40 °C — e un'eventuale caduta di tensione sul rail
+> 3,3 V quando la radio LoRa trasmette.
+>
+> **Sintomo:** impulsi persi, quindi litri contati **in difetto**. Nel caso
+> peggiore, zero impulsi durante l'irrigazione, che il firmware interpreta
+> come `nessun_flusso` e segnala come guasto idraulico.
+>
+> Entrambi gli errori vanno nella direzione sicura — un'irrigazione volumetrica
+> che sotto-conta si ferma comunque al tetto `max_sec`, non allaga — ma se
+> succedesse la soluzione è passare all'alimentazione a 5 V con il partitore
+> qui sotto, mettendo `FLUSSO_PULLUP` a 0.
+
+**Alternativa: alimentazione a 5 V con partitore**
 
 ```
   YF-S201                                    ESP32
@@ -154,36 +187,46 @@ Il sensore va alimentato a 5 V e la sua uscita a effetto Hall commuta a 5 V:
             │           │
          (segnale)      └──────────────────►  GPIO 17
                         │
-                       ═╪═ 100 nF  ← FACOLTATIVO, vedi sotto
+                       ═╪═ 100 nF  ← facoltativo
                         │
                        GND
 ```
 
-Con 10 kΩ / 15 kΩ i 5 V diventano circa 3,0 V: dentro le specifiche.
-In alternativa va bene un level shifter bidirezionale.
+Con 10 kΩ / 15 kΩ i 5 V diventano circa 3,0 V. In questo caso metti
+`FLUSSO_PULLUP 0`: il livello lo fornisce il partitore, e un pull-up interno
+lo falserebbe.
 
-**Il condensatore da 100 nF è facoltativo: puoi partire senza.** Serve a
-filtrare i disturbi che la pompa induce sul cavo di segnale, ma il firmware ha
+**Il condensatore da 100 nF è facoltativo** e nella prova non è servito.
+Filtra i disturbi che la pompa induce sul cavo di segnale, ma il firmware ha
 già un filtro software: l'interrupt scarta gli impulsi che arrivano a meno di
-1 ms l'uno dall'altro (`FLUSSO_MIN_INTERVALLO_US` in `config.h`), mentre alla
-portata massima del YF-S201 gli impulsi veri distano circa 4,4 ms.
+1 ms l'uno dall'altro (`FLUSSO_MIN_INTERVALLO_US`), mentre gli impulsi veri,
+alla portata massima del sensore, distano circa 4,6 ms.
 
-Come accorgersi se servisse davvero: il conteggio dei litri risulterebbe
-**più alto** del reale, perché i disturbi vengono contati come impulsi. In quel
-caso, in ordine di efficacia:
+Attenzione però: la prova è stata fatta **con la pompa spenta**, versando a
+mano, e la pompa è proprio la sorgente di disturbo principale. Il verdetto
+vero si avrà a impianto collegato. Sintomi da tenere d'occhio: litri contati
+**in eccesso**, oppure impulsi contati a valvola chiusa. In quel caso, in
+ordine:
 
-1. allontana il cavo del flussometro da quello della pompa, e non farli correre
-   paralleli nella stessa canalina;
+1. allontana il cavo del flussometro da quello della pompa, senza farli
+   correre paralleli nella stessa canalina;
 2. alza `FLUSSO_MIN_INTERVALLO_US` a 2000 e riflasha;
 3. aggiungi il condensatore.
 
-Un secondo sintomo, opposto e più insidioso: se il flussometro contasse
-impulsi **a valvola chiusa**, si tratterebbe quasi certamente di disturbi e non
-di una perdita d'acqua — e lì il condensatore serve.
+**Calibrazione.** Il datasheet dichiara `F = 7,5 × Q[L/min]`, cioè 450
+impulsi/litro, ma il nostro esemplare ne fa **433** (K = 433/60 = 7,22),
+misurati versando un litro con l'imbuto. È già il valore predefinito in
+`config.h`.
 
-**Calibrazione:** il datasheet dà `F = 7,5 × Q[L/min]`, cioè 450 impulsi/litro,
-ma varia parecchio da esemplare a esemplare. Riempi un contenitore da 1 litro e
-usa il conteggio reale con `CAL,acqua,<impulsi>`.
+Un avvertimento su questa misura: le turbine sono poco lineari alle portate
+basse, e un litro versato a mano con l'imbuto scorre molto più lentamente
+dell'acqua spinta dalla pompa. A impianto collegato conviene riverificare con
+un secchio graduato alla portata reale e correggere con `CAL,acqua,<impulsi>`,
+senza bisogno di ricompilare nulla.
+
+> Se hai già flashato il nodo prima di questa modifica, il vecchio valore 450
+> è rimasto salvato in NVS e il nuovo default **non** lo sovrascrive: mandagli
+> `CAL,acqua,433` per allinearlo.
 
 ### 2.3 GPIO 17 → non disponibile sui moduli WROVER
 

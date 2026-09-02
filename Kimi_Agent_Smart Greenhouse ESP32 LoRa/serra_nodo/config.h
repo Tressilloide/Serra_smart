@@ -76,9 +76,9 @@
 // luce. Se in Home Assistant vedi la luce al 90% di notte, metti 1 qui.
 #define LUCE_INVERTITA   0
 
-#define USA_SOIL         1        // Sensori umidita' terreno analogici
-#define N_SOIL           2        // Quanti sensori terreno (max 4 su ADC nativo)
-#define USA_FLUSSO       1        // Flussometro YF-S201
+#define USA_SOIL         0        // Sensori umidita' terreno analogici
+#define N_SOIL           0        // Quanti sensori terreno (max 4 su ADC nativo)
+#define USA_FLUSSO       0        // Flussometro YF-S201
 
 // Espansione analogica futura: mettendo a 1 i sensori analogici si spostano
 // su un ADS1115 sul bus I2C, senza toccare nient'altro nel codice.
@@ -104,10 +104,28 @@
 // non condizionata al terreno (si comporta come prima: solo orario).
 #define SOIL_SOGLIA_DEF  -1
 
-// Flussometro YF-S201: impulsi per litro. Datasheet: F = 7.5 * Q(L/min),
-// cioe' 450 impulsi/litro. Varia parecchio da esemplare a esemplare:
-// taralo riempiendo un contenitore da 1 litro e leggendo il conteggio.
-#define FLUSSO_IMP_LITRO_DEF 450.0f
+// Flussometro YF-S201: impulsi per litro.
+// Il datasheet dichiara F = 7.5 * Q(L/min), cioe' 450 impulsi/litro, ma varia
+// parecchio da esemplare a esemplare. Questo valore e' quello MISURATO sul
+// nostro sensore versando un litro con l'imbuto: 433 impulsi, che corrisponde
+// a K = 433/60 = 7.22.
+//
+// Attenzione a una cosa: le turbine di questi flussometri sono poco lineari
+// alle portate basse, e un litro versato a mano scorre molto piu' lentamente
+// dell'acqua spinta dalla pompa. Quando l'impianto sara' collegato, conviene
+// riverificare con un secchio graduato alla portata reale e correggere con
+// il comando CAL,acqua,<impulsi>.
+#define FLUSSO_IMP_LITRO_DEF 433.0f
+
+// Resistenza di pull-up interna sul pin degli impulsi.
+//
+// 1 = pull-up interno attivo. E' la configurazione in uso: il sensore e'
+//     alimentato a 3,3 V e il filo del segnale va diritto sul GPIO, senza
+//     partitore ne' condensatore. Alimentandolo a 3,3 V nel circuito non
+//     esiste nessun 5 V, quindi il pin non puo' ricevere sovratensioni.
+// 0 = nessun pull-up: da usare se alimenti il sensore a 5 V e hai messo il
+//     partitore resistivo o un level shifter (vedi docs/PINOUT.md 2.2).
+#define FLUSSO_PULLUP        1
 
 // Sicurezza idraulica: se durante l'irrigazione non arriva NESSUN impulso
 // entro questo tempo, qualcosa non va (pompa guasta, serbatoio vuoto, filtro

@@ -115,7 +115,15 @@ void flussoAzzera() {
   s_ultimoImp = 0;
   interrupts();
   if (!s_flussoAttivo) {
-    pinMode(PIN_FLUSSO, INPUT);   // il livello lo fornisce il partitore esterno
+    // Con FLUSSO_PULLUP il livello alto lo definisce l'ESP32 a 3,3 V e il
+    // sensore si limita a tirare la linea a massa: nessun partitore esterno
+    // e nessun rischio che i 5 V arrivino sul GPIO.
+    // Senza, il livello deve arrivare dal partitore o dal level shifter.
+  #if FLUSSO_PULLUP
+    pinMode(PIN_FLUSSO, INPUT_PULLUP);
+  #else
+    pinMode(PIN_FLUSSO, INPUT);
+  #endif
     attachInterrupt(digitalPinToInterrupt(PIN_FLUSSO), isrFlusso, FALLING);
     s_flussoAttivo = true;
   }

@@ -39,16 +39,22 @@ inline void wdtImposta(uint32_t secondi) {
   cfg.idle_core_mask = 0;
   cfg.trigger_panic  = true;
 
-  esp_err_t e = esp_task_wdt_init(&cfg);
-  if (e == ESP_ERR_INVALID_STATE) e = esp_task_wdt_reconfigure(&cfg);
+  // Si prova PRIMA a riconfigurare e solo dopo a inizializzare.
+  // Nel core 3.x il TWDT e' gia' avviato dal framework, quindi chiamare
+  // init() per primo fallisce sempre e stampa un "E (...) task_wdt: TWDT
+  // already initialized" rosso sul seriale a ogni irrigazione: sembra un
+  // guasto grave e invece e' rumore. Invertendo l'ordine il caso normale
+  // e' silenzioso.
+  esp_err_t e = esp_task_wdt_reconfigure(&cfg);
+  if (e == ESP_ERR_INVALID_STATE) e = esp_task_wdt_init(&cfg);
   if (e != ESP_OK)
     Serial.printf("[WDT] Configurazione fallita (err=%d)\n", (int)e);
 #else
   esp_task_wdt_init(secondi, true);
 #endif
 
-  // ESP_ERR_INVALID_ARG = il task era gia' iscritto: non e' un problema.
-  esp_task_wdt_add(NULL);
+  // Stesso motivo: iscrivere un task gia' iscritto stampa un errore rosso.
+  if (esp_task_wdt_status(NULL) != ESP_OK) esp_task_wdt_add(NULL);
 }
 
 // Da chiamare periodicamente nei cicli lunghi ("nutrire il cane da guardia").

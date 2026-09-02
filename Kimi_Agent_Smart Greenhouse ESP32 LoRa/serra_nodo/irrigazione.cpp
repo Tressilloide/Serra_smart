@@ -157,6 +157,8 @@ EsitoIrrigazione irrigazioneEsegui(uint32_t durataSec, float litriTarget, uint32
   const uint32_t graziaMs  = (uint32_t)FLUSSO_GRAZIA_SEC  * 1000UL;
   const uint32_t verdetoMs = graziaMs + (uint32_t)FLUSSO_TIMEOUT_SEC * 1000UL;
 
+  uint32_t ultimoLog = 0;
+
   while (true) {
     wdtNutri();
 
@@ -165,6 +167,25 @@ EsitoIrrigazione irrigazioneEsegui(uint32_t durataSec, float litriTarget, uint32
 
     if (flussoDisponibile()) {
       litri = flussoLitri();
+
+      /*
+       * Riga di avanzamento ogni 2 secondi. Serve a diagnosticare i problemi
+       * del flussometro guardando il monitor seriale mentre l'acqua scorre.
+       *
+       * "pin" e' il livello logico letto sul filo del segnale, ed e' il dato
+       * piu' rivelatore: se resta fisso a 1 mentre l'acqua passa, gli impulsi
+       * non arrivano proprio all'ESP32 (massa non in comune, filo staccato,
+       * sensore non alimentato). Se invece cambia ma gli impulsi restano a
+       * zero, il problema e' nell'interrupt.
+       */
+      if (trascorso - ultimoLog >= 2000UL) {
+        ultimoLog = trascorso;
+        Serial.printf("[IRRIG] %2lus/%lus  impulsi=%lu  %.3f L  pin=%d\n",
+                      (unsigned long)(trascorso / 1000UL),
+                      (unsigned long)durataSec,
+                      (unsigned long)flussoImpulsi(), litri,
+                      digitalRead(PIN_FLUSSO));
+      }
 
       // Obiettivo volumetrico raggiunto
       if (litriTarget > 0.0f && litri >= litriTarget) {

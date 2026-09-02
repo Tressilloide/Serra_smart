@@ -211,10 +211,24 @@
 #define PIN_SOIL4 39     // Riserva (VN, solo input)
 
 // --- Flussometro ---
-// ATTENZIONE MODULI WROVER: sui moduli ESP32-WROVER il GPIO 17 e' occupato
-// dalla PSRAM e NON e' utilizzabile. Il firmware lo rileva al boot con
-// psramFound() e stampa un avviso: in quel caso serve un pin alternativo.
-#define PIN_FLUSSO       17   // Impulsi YF-S201 (interrupt su fronte di discesa)
+//
+// Impulsi YF-S201, su interrupt a fronte di discesa.
+//
+// NON usare GPIO 16 o 17: sui moduli ESP32-WROVER (le schede a 38 pin, quelle
+// con il modulo metallico piu' lungo) sono cablati al chip di PSRAM e non
+// funzionano come ingresso. Il sintomo e' inequivocabile e ci e' costato una
+// serata: il pin resta fisso a livello alto, il conteggio non parte mai, e
+// nel frattempo la stessa identica cablatura su una scheda WROOM a 30 pin
+// funziona perfettamente.
+//
+// GPIO 15 invece va bene su entrambi i moduli, ha il pull-up interno (che
+// serve, perche' l'uscita del sensore e' open-drain) ed e' nel dominio RTC.
+// E' uno strapping pin, ma il suo stato di riposo e' proprio quello alto che
+// gli serve, quindi non disturba il boot.
+//
+// ATTENZIONE se un giorno riattivi l'alimentazione commutata dei sensori:
+// anche quella vorrebbe GPIO 15. Va scelto un altro pin per una delle due.
+#define PIN_FLUSSO       15
 
 // --- Alimentazione commutata dei sensori terreno ---
 //
@@ -266,3 +280,19 @@
 // Sentinella "sensore non disponibile". Viene inviata al posto di NaN perche'
 // "nan" non e' JSON valido e romperebbe il parsing in Home Assistant.
 #define VAL_NON_DISPONIBILE -127.0f
+
+// ======================= COERENZA DEL PINOUT ================================
+// Controlli a tempo di compilazione: meglio un errore in fase di build che una
+// serata a inseguire un sensore che non legge.
+
+#if (PIN_PWR_SENSORI >= 0) && (PIN_PWR_SENSORI == PIN_FLUSSO)
+  #error "PIN_FLUSSO e PIN_PWR_SENSORI sono sullo stesso GPIO: cambiane uno."
+#endif
+
+#if USA_FLUSSO && (PIN_FLUSSO == 16 || PIN_FLUSSO == 17)
+  #warning "PIN_FLUSSO su GPIO 16/17: non funziona sui moduli WROVER (schede a 38 pin), dove sono cablati alla PSRAM."
+#endif
+
+#if USA_FLUSSO && FLUSSO_PULLUP && (PIN_FLUSSO >= 34)
+  #error "I GPIO 34-39 sono di solo ingresso e NON hanno pull-up interno: con FLUSSO_PULLUP servirebbe una resistenza esterna."
+#endif

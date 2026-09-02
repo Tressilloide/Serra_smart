@@ -25,11 +25,10 @@ Riferimento: [`serra_nodo/config.h`](../serra_nodo/config.h) e
 | Umidità terreno 1 | 34 | ADC1, **solo input** |
 | Umidità terreno 2 | 35 | ADC1, **solo input** |
 | *(riserva analogica)* | 36 (VP), 39 (VN) | ADC1, solo input |
-| Flussometro YF-S201 | 17 | Interrupt su fronte di discesa |
-| Alimentazione sensori | 15 | *Predisposto ma **non attivo**, vedi 2.1.1* |
+| Flussometro YF-S201 | 15 | Interrupt su fronte di discesa. **Non usare 16/17** |
+| Alimentazione sensori | — | *Disattivata, vedi 2.1.1. Quando la riattivi scegli un pin diverso dal 15* |
 
-Restano liberi: **15** (finche' l'alimentazione commutata resta disattivata),
-**16**, **2**, **0**.
+Restano liberi: **16**, **17** (inutilizzabili su WROVER, vedi 2.3), **2**, **0**.
 
 ---
 
@@ -78,8 +77,15 @@ e che i due sensori smettono di concordare fra loro**. Quando succede, o
 sostituisci le sonde o attivi l'alimentazione commutata (meglio entrambe).
 
 Se e quando decidi di attivarla, servono un interruttore comandato dall'ESP32
-e il pin `PIN_PWR_SENSORI` (GPIO 15) per pilotarlo. Vanno bene entrambe le
-soluzioni qui sotto.
+e un GPIO libero su cui pilotarlo, da mettere in `PIN_PWR_SENSORI`.
+
+> **Il GPIO 15 non e' piu' disponibile**: ora ci sta il flussometro, spostato
+> li' perche' sulla scheda a 38 pin il 17 e' occupato dalla PSRAM (vedi 2.3).
+> Scegli **GPIO 2**, oppure il **16** o il **17** se la tua scheda e' un WROOM
+> a 30 pin. `config.h` ha un controllo che blocca la compilazione se per
+> distrazione metti i due sullo stesso pin.
+
+Vanno bene entrambe le soluzioni qui sotto.
 
 **Opzione A — un canale libero del modulo relay** (nessun componente da comprare)
 
@@ -88,7 +94,7 @@ un secondo canale fa benissimo da interruttore:
 
 ```
   Modulo relay                         Sensori terreno
-    IN2   ◄──────── GPIO 15
+    IN2   ◄──────── PIN_PWR_SENSORI
     COM2  ◄──────── 3,3 V dell'ESP32
     NO2   ────────────────────────────► VCC di entrambi i sensori
 ```
@@ -126,20 +132,22 @@ Tre cose da sapere su questa soluzione:
           │
           └────────► VCC dei sensori terreno
 
-  GPIO 15 ──[10k]──► G     (+ resistenza da 100k tra G e S)
+  PIN_PWR_SENSORI ──[10k]──► G   (+ resistenza da 100k tra G e S)
 ```
 
 Con questa opzione metti `#define PWR_SENSORI_ON HIGH` in `config.h`.
 Consumo nullo, nessuna parte in movimento, nessun limite di durata.
 
-> **Perché GPIO 15 e non 16.** GPIO 15 appartiene al dominio RTC, quindi il
-> firmware può **mantenerne** il livello anche durante il deep sleep
-> (`gpio_hold_en`). Con un relay è importante: un pin lasciato flottante per
-> 15 minuti potrebbe farlo eccitare da solo, tenendo i sensori sotto tensione
-> tutta la notte — cioè esattamente quello che l'alimentazione commutata deve
-> evitare. In più GPIO 15 ha un pull-up interno al reset, quindi si presenta
-> ALTO: con un relay attivo basso questo significa "spento" già prima che il
-> firmware parta, senza bisogno di resistenze esterne.
+> **Scegli un pin del dominio RTC** (0, 2, 4, 12–15, 25–27, 32–39): solo
+> quelli possono **mantenere** il livello durante il deep sleep
+> (`gpio_hold_en`), e il firmware lo fa già. Con un relay è importante: un pin
+> lasciato flottante per 15 minuti potrebbe farlo eccitare da solo, tenendo i
+> sensori sotto tensione tutta la notte — cioè esattamente quello che
+> l'alimentazione commutata deve evitare.
+>
+> Meglio ancora se ha il pull-up interno attivo al reset (come il 15 e il 2):
+> con un relay attivo basso si presenta già "spento" prima ancora che il
+> firmware parta, senza resistenze esterne.
 
 ### 2.2 Flussometro YF-S201
 
@@ -151,7 +159,7 @@ il pull-up interno dell'ESP32 attivo (`FLUSSO_PULLUP 1` in `config.h`).
   YF-S201                        ESP32
    Rosso  ──► 3,3 V ──────────►  3V3
    Nero   ──► GND ────────────►  GND
-   Giallo ───────────────────►  GPIO 17   (pull-up interno)
+   Giallo ───────────────────►  GPIO 15   (pull-up interno)
 ```
 
 **Perché alimentarlo a 3,3 V è la scelta migliore:** in tutto il circuito non
@@ -185,7 +193,7 @@ danneggia il GPIO.
    Nero   ──► GND ────────────────────────►  GND
    Giallo ──┬──[ 10k ]──┬──[ 15k ]── GND
             │           │
-         (segnale)      └──────────────────►  GPIO 17
+         (segnale)      └──────────────────►  GPIO 15
                         │
                        ═╪═ 100 nF  ← facoltativo
                         │
@@ -228,21 +236,43 @@ senza bisogno di ricompilare nulla.
 > è rimasto salvato in NVS e il nuovo default **non** lo sovrascrive: mandagli
 > `CAL,acqua,433` per allinearlo.
 
-### 2.3 GPIO 17 → non disponibile sui moduli WROVER
+### 2.3 GPIO 16 e 17 → inutilizzabili sulle schede a 38 pin (WROVER)
 
-Sui moduli **ESP32-WROVER** (quelli con PSRAM) i GPIO 16 e 17 sono cablati alla
-memoria PSRAM e non sono utilizzabili. Il firmware lo rileva al boot con
-`psramFound()` e stampa un avviso sul monitor seriale.
+Sui moduli **ESP32-WROVER** i GPIO 16 e 17 sono cablati al chip di **PSRAM**
+e non funzionano come ingressi o uscite. In pratica: le schede di sviluppo a
+**38 pin** montano quasi sempre un WROVER, quelle a **30 pin** un WROOM dove
+16 e 17 sono liberi.
 
-Riguarda solo il flussometro, perché l'alimentazione dei sensori sta su
-GPIO 15. Se hai un WROVER, in `config.h` sposta `PIN_FLUSSO` su un pin libero
-con interrupt: **GPIO 4** è già usato dal CS della microSD, quindi la scelta
-più pratica è rinunciare a un canale ADC1 e usare **GPIO 39**, che va bene
-come ingresso digitale.
+> **È esattamente l'inciampo che ci è costato una serata.** Il flussometro era
+> su GPIO 17 e non contava un solo impulso: il pin restava fisso a livello
+> alto e nessun segnale riusciva a muoverlo. Lo stesso sensore, lo stesso filo
+> e lo stesso codice, su una scheda a 30 pin, funzionavano perfettamente.
+> Per questo il flussometro sta ora su **GPIO 15**, che va bene su entrambi i
+> moduli.
 
-```c
-#define PIN_FLUSSO  39   // solo su moduli WROVER
+Il firmware stampa a ogni avvio quale modulo ha trovato:
+
 ```
+  Chip: ESP32-D0WD rev 3, 2 core | PSRAM: SI (WROVER: GPIO 16 e 17 NON usabili)
+```
+
+Attenzione però: `psramFound()` dice `no` anche su una scheda WROVER se nelle
+opzioni della scheda hai lasciato la PSRAM disabilitata, mentre i due pin
+restano comunque inservibili. **La verifica che non sbaglia è contare i pin**
+del connettore, o leggere la sigla sulla schermatura metallica del modulo.
+
+**Come scegliere un pin per un ingresso a interrupt**, se ti servisse:
+
+| Pin | Utilizzabile? |
+|---|---|
+| 15, 2, 0 | Sì (strapping, ma con il pull-up idle alto non disturbano il boot) |
+| 16, 17 | **No** su WROVER |
+| 34, 35, 36, 39 | **No** con `FLUSSO_PULLUP 1`: sono di solo ingresso e **non hanno pull-up interno**. Servirebbe una resistenza esterna da 10 kΩ verso 3,3 V |
+| 6–11 | **Mai**: collegati alla memoria flash |
+
+`config.h` contiene dei controlli a tempo di compilazione che bloccano la
+build sui casi peggiori (pin 34-39 con pull-up richiesto, flussometro e
+alimentazione sensori sullo stesso GPIO) e avvisano sui 16/17.
 
 ### 2.4 GPIO 12 (LoRa MISO) → il pin più delicato della scheda
 

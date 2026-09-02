@@ -312,14 +312,14 @@ void setup() {
   //     bus I2C lascerebbe il nodo appeso a batteria fino a scaricarla.
   wdtImposta(WDT_SETUP_SEC);
 
-  // Avviso sui moduli con PSRAM, dove GPIO16/17 non sono liberi.
-#if (PIN_FLUSSO == 16 || PIN_FLUSSO == 17 || PIN_PWR_SENSORI == 16 || PIN_PWR_SENSORI == 17)
-  if (psramFound()) {
-    Serial.println(F("[HW] ATTENZIONE: questa scheda ha PSRAM (modulo WROVER)."));
-    Serial.println(F("[HW] I GPIO 16 e 17 sono usati dalla PSRAM e NON sono disponibili."));
-    Serial.println(F("[HW] In config.h sposta PIN_FLUSSO su 39 (vedi docs/PINOUT.md)."));
-  }
-#endif
+  // Identita' della scheda. Stampata sempre, non solo in caso di problemi:
+  // le schede a 38 pin montano di solito un modulo WROVER, la cui PSRAM
+  // occupa i GPIO 16 e 17 rendendoli inservibili come I/O. Sapere subito su
+  // che modulo si sta girando evita di inseguire un sensore che non legge.
+  Serial.printf("  Chip: %s rev %d, %d core | PSRAM: %s\n",
+                ESP.getChipModel(), ESP.getChipRevision(), ESP.getChipCores(),
+                psramFound() ? "SI (WROVER: GPIO 16 e 17 NON usabili)" : "no");
+  Serial.println(F("============================================================"));
 
   // (3) Impostazioni persistenti
   impostazioniCarica();

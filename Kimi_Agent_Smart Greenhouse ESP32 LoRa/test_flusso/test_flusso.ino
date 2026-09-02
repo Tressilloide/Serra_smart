@@ -24,7 +24,10 @@
 
 #include <Arduino.h>
 
-#define PIN_FLUSSO   17     // lo stesso pin del nodo serra
+// Cambia qui per provare pin diversi. NON usare 16 o 17: sulle schede a
+// 38 pin (modulo WROVER) sono cablati alla PSRAM e non funzionano come
+// ingresso. NON usare 34-39: sono di solo ingresso e non hanno pull-up.
+#define PIN_FLUSSO   15     // lo stesso pin del nodo serra
 #define IMPULSI_LITRO 433.0f
 
 volatile uint32_t g_impulsi = 0;
@@ -59,6 +62,13 @@ void setup() {
   Serial.println(F("  transizioni : cambi di livello visti campionando il pin"));
   Serial.println(F("  livello     : stato del pin in questo istante"));
   Serial.println(F("============================================================"));
+  Serial.println();
+
+  // Identifica il modulo: le schede a 38 pin sono di solito WROVER e hanno
+  // la PSRAM, che si mangia i GPIO 16 e 17.
+  Serial.printf("  Chip %s rev %d, %d core, PSRAM rilevata: %s\n",
+                ESP.getChipModel(), ESP.getChipRevision(), ESP.getChipCores(),
+                psramFound() ? "SI (modulo WROVER: 16 e 17 NON usabili)" : "no");
   Serial.println();
 
   pinMode(PIN_FLUSSO, INPUT_PULLUP);

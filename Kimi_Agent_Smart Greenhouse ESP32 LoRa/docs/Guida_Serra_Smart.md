@@ -91,6 +91,7 @@ un comando, più comandi si svuotano a catena nello stesso risveglio.
 | `camera_ponte/discovery.{h,cpp}` | Generazione entità Home Assistant |
 | `camera_ponte/comandi.{h,cpp}` | Coda comandi MQTT → LoRa |
 | `test_protocollo/` | Autotest del protocollo, da caricare su un ESP32 qualsiasi |
+| `test_flusso/` | Test del flussometro, da caricare sulla scheda del nodo |
 | `homeassistant/packages/serra.yaml` | Contatori, sensori calcolati, automazioni |
 | `homeassistant/lovelace/serra_core.yaml` | Dashboard senza dipendenze |
 | `homeassistant/lovelace/serra_hacs.yaml` | Dashboard con Mushroom + ApexCharts |
@@ -490,6 +491,7 @@ al punto successivo.
 | Sintomo | Cosa controllare |
 |---|---|
 | `[LoRa] ERRORE: modulo non trovato` | Cablaggio SPI, NSS su GPIO 5, alimentazione 3,3 V, **antenna montata** |
+| Flussometro sempre a zero | Il pin e' inservibile? Sulle schede a **38 pin** (WROVER) i GPIO 16 e 17 sono occupati dalla PSRAM. Carica `test_flusso/` sulla scheda del nodo: separa hardware e firmware in un colpo |
 | Il nodo a volte non parte | GPIO 12 alto al boot: manca il pulldown da 10k. Vedi [PINOUT.md §2.4](PINOUT.md) |
 | Nessun ACK | Stessi `LORA_BAND`, SF, BW e CR sui due sketch? Ponte acceso e in ascolto? |
 | `[SD] ERRORE: scheda non trovata` | FAT32, CS su GPIO 4, modulo a 3,3 V |

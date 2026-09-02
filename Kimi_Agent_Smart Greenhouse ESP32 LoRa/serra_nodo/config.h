@@ -78,7 +78,7 @@
 
 #define USA_SOIL         0        // Sensori umidita' terreno analogici
 #define N_SOIL           0        // Quanti sensori terreno (max 4 su ADC nativo)
-#define USA_FLUSSO       0        // Flussometro YF-S201
+#define USA_FLUSSO       1        // Flussometro YF-S201
 
 // Espansione analogica futura: mettendo a 1 i sensori analogici si spostano
 // su un ADS1115 sul bus I2C, senza toccare nient'altro nel codice.
@@ -127,10 +127,29 @@
 //     partitore resistivo o un level shifter (vedi docs/PINOUT.md 2.2).
 #define FLUSSO_PULLUP        1
 
-// Sicurezza idraulica: se durante l'irrigazione non arriva NESSUN impulso
-// entro questo tempo, qualcosa non va (pompa guasta, serbatoio vuoto, filtro
-// otturato). Il nodo chiude il relay e segnala l'anomalia a Home Assistant.
-#define FLUSSO_TIMEOUT_SEC   30
+// --- Sicurezza idraulica: rilevamento dell'irrigazione "a vuoto" -----------
+//
+// Se durante l'irrigazione non arriva NESSUN impulso, qualcosa non va: pompa
+// guasta, serbatoio vuoto, filtro otturato, tubo staccato. Il nodo lo segnala
+// a Home Assistant come "nessun_flusso".
+//
+// Il controllo si fa in due tempi, perche' l'acqua non arriva istantaneamente:
+//
+//   |<-- GRAZIA -->|<-- TIMEOUT -->|
+//   valvola        acqua           se qui gli impulsi
+//   aperta         attesa          sono ancora ZERO -> anomalia
+//
+// GRAZIA = tempo fisico perche' l'acqua percorra il tubo e la turbina inizi a
+// girare. Durante questa finestra il flusso NON viene valutato: gli impulsi
+// vengono comunque contati, semplicemente non si giudica ancora.
+// Misura quanto ci mette davvero il tuo impianto e lascia un buon margine:
+// il costo di un valore troppo alto e' solo un allarme che arriva piu' tardi,
+// mentre uno troppo basso genera falsi allarmi a ogni irrigazione.
+#define FLUSSO_GRAZIA_SEC    5
+
+// TIMEOUT = quanto si aspetta ANCORA, dopo la grazia, prima di dichiarare
+// l'anomalia. Sommati fanno il ritardo totale del rilevamento.
+#define FLUSSO_TIMEOUT_SEC   10
 
 // ======================= MICROSD / BACKLOG ==================================
 

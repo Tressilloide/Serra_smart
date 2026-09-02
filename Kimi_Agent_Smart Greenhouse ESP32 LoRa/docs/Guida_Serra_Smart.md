@@ -497,7 +497,7 @@ al punto successivo.
 | Irrigazione mai eseguita | Guarda `sensor.serra_esito_irrigazione`: ti dice **il motivo** |
 | `ora_non_attendibile` | CR2032 del DS1307 scarica. Si corregge da sola al primo contatto col ponte |
 | `terreno_umido` | Sta funzionando: il terreno è sopra soglia. Abbassa la soglia o mettila a −1 |
-| `nessun_flusso` | Serbatoio vuoto, pompa guasta, filtro otturato o flussometro scollegato |
+| `nessun_flusso` | Serbatoio vuoto, pompa guasta, filtro otturato o flussometro scollegato. Se compare a ogni irrigazione ma l'acqua c'è, alza `FLUSSO_GRAZIA_SEC`: il tuo tubo impiega più di 5 s a riempirsi |
 | Comando premuto ma non succede nulla | Normale: viene eseguito al prossimo risveglio. Controlla `sensor.serra_comandi_in_coda` |
 | Comando rifiutato con `rc=3` | Bloccato da un limite di sicurezza. Il motivo è nel campo `det` |
 | Entità mancanti in HA | Riavvia il ponte: ripubblica tutta la discovery a ogni riconnessione MQTT |

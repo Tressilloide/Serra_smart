@@ -150,6 +150,13 @@ EsitoIrrigazione irrigazioneEsegui(uint32_t durataSec, float litriTarget, uint32
   bool  anomaliaFlusso  = false;
   float litri           = 0.0f;
 
+  // Finestra di grazia: l'acqua non arriva istantaneamente alla turbina, deve
+  // prima percorrere il tubo e la pompa deve adescarsi. Fino a qui gli impulsi
+  // vengono contati ma il flusso non viene giudicato, altrimenti ogni singola
+  // irrigazione partirebbe con un falso allarme "nessun flusso".
+  const uint32_t graziaMs  = (uint32_t)FLUSSO_GRAZIA_SEC  * 1000UL;
+  const uint32_t verdetoMs = graziaMs + (uint32_t)FLUSSO_TIMEOUT_SEC * 1000UL;
+
   while (true) {
     wdtNutri();
 
@@ -171,10 +178,10 @@ EsitoIrrigazione irrigazioneEsegui(uint32_t durataSec, float litriTarget, uint32
         break;
       }
 
-      // Anomalia idraulica: valvola aperta ma nessun impulso.
-      // Pompa guasta, serbatoio vuoto, filtro otturato o flussometro scollegato.
-      if (!anomaliaFlusso && trascorso > (uint32_t)FLUSSO_TIMEOUT_SEC * 1000UL &&
-          flussoImpulsi() == 0) {
+      // Anomalia idraulica: valvola aperta da abbastanza tempo e ancora
+      // nessun impulso. Pompa guasta, serbatoio vuoto, filtro otturato,
+      // tubo staccato o flussometro scollegato.
+      if (!anomaliaFlusso && trascorso > verdetoMs && flussoImpulsi() == 0) {
         anomaliaFlusso = true;
         Serial.println(F("[IRRIG] ANOMALIA: valvola aperta ma nessun flusso rilevato!"));
         backlogLog("IRRIGAZIONE ANOMALIA nessun flusso");
@@ -193,10 +200,28 @@ EsitoIrrigazione irrigazioneEsegui(uint32_t durataSec, float litriTarget, uint32
   // --- Chiusura --------------------------------------------------------------
   digitalWrite(PIN_RELAY, RELAY_OFF);
 
-  g_durataUltima = (millis() - t0) / 1000UL;
+  const uint32_t trascorsoTot = millis() - t0;
+  g_durataUltima = trascorsoTot / 1000UL;
 
   if (flussoDisponibile()) {
     litri = flussoLitri();
+
+    /*
+     * Verdetto finale, per le irrigazioni troppo brevi perche' il controllo
+     * dentro il ciclo faccia in tempo a scattare.
+     *
+     * Senza questo, un'irrigazione piu' corta di GRAZIA + TIMEOUT non avrebbe
+     * MAI il rilevamento dell'acqua mancante: la valvola si aprirebbe e
+     * chiuderebbe a vuoto senza che nessuno se ne accorga, e il caso tipico
+     * e' proprio l'irrigazione manuale breve fatta per provare l'impianto.
+     * Superata la sola finestra di grazia, zero impulsi vuol dire zero acqua.
+     */
+    if (!anomaliaFlusso && trascorsoTot > graziaMs && flussoImpulsi() == 0) {
+      anomaliaFlusso = true;
+      Serial.println(F("[IRRIG] ANOMALIA: irrigazione conclusa senza un solo impulso!"));
+      backlogLog("IRRIGAZIONE ANOMALIA nessun flusso (verdetto finale)");
+    }
+
     flussoStacca();
   }
   g_litriUltima = litri;

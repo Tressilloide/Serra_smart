@@ -259,6 +259,16 @@ resto.
 pompa guasta, filtro otturato, tubo staccato — oppure semplicemente il
 flussometro scollegato.
 
+Non scatta subito, perché l'acqua impiega qualche secondo a percorrere il tubo
+e a far girare la turbina: c'è una finestra di grazia (`FLUSSO_GRAZIA_SEC`,
+5 s) durante la quale gli impulsi vengono contati ma il flusso non viene
+giudicato, seguita da un'attesa vera e propria (`FLUSSO_TIMEOUT_SEC`, 10 s).
+Se l'irrigazione finisce prima che il conto arrivi a fine, il verdetto viene
+comunque emesso alla chiusura della valvola: zero impulsi dopo la sola
+finestra di grazia significa zero acqua. Senza questo controllo finale
+un'irrigazione manuale breve — proprio quella che si fa per provare
+l'impianto — passerebbe a vuoto senza segnalare nulla.
+
 ---
 
 ## 6. Topic MQTT

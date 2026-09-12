@@ -18,6 +18,16 @@
 #  Discovery dal ponte. Qui c'e' solo quello che la discovery non puo' fare:
 #  contatori derivati, sensori calcolati e automazioni di allarme.
 #
+#  COME NASCONO GLI ENTITY ID
+#  --------------------------
+#  Home Assistant li ricava dal campo "name", NON da "unique_id": lo slug si
+#  ottiene mettendo tutto in minuscolo, togliendo la punteggiatura e
+#  sostituendo gli spazi con underscore. Un apostrofo produce quindi uno slug
+#  poco intuitivo ("dall'ultimo" diventa "dallultimo"), per cui qui i nomi
+#  delle entita' richiamate altrove nel file sono deliberatamente senza
+#  apostrofi. Se aggiungi entita' tue, ricordatelo o i riferimenti non
+#  troveranno nulla e i sensori resteranno "non disponibile" senza spiegazione.
+#
 #  ATTENZIONE AGLI ENTITY ID
 #  -------------------------
 #  Home Assistant li genera da "nome dispositivo + nome entita'", quindi
@@ -34,12 +44,12 @@
 #  byte preziosi nel pacchetto LoRa.
 
 utility_meter:
-  acqua_serra_giornaliera:
+  acqua_serra_oggi:
     name: Acqua serra oggi
     source: sensor.serra_acqua_totale
     cycle: daily
 
-  acqua_serra_mensile:
+  acqua_serra_questo_mese:
     name: Acqua serra questo mese
     source: sensor.serra_acqua_totale
     cycle: monthly
@@ -65,7 +75,7 @@ mqtt:
 
     # Ora dichiarata dal NODO: se resta a 1970 vuol dire che il DS1307 ha perso
     # l'ora e non e' ancora stato risincronizzato dal ponte.
-    - name: "Serra ora del nodo"
+    - name: "Serra ora nodo"
       unique_id: serra_ora_nodo
       state_topic: "serra/nodo/stato"
       value_template: >-
@@ -102,7 +112,7 @@ template:
           {{ (es * (1 - rh / 100)) | round(2) }}
 
       # --- Minuti dall'ultimo contatto ---------------------------------------
-      - name: "Serra minuti dall'ultimo contatto"
+      - name: "Serra minuti silenzio"
         unique_id: serra_minuti_silenzio
         unit_of_measurement: "min"
         state_class: measurement

@@ -38,6 +38,65 @@ static void applicaDefault() {
   g_cfg.sensoriAbilitati = 0xFFFFFFFF;   // tutti attivi salvo diverso ordine
 }
 
+/*
+ * Riporta entro limiti sensati tutto cio' che arriva dalla NVS.
+ *
+ * I valori in NVS sopravvivono ai cambi di firmware, e non c'e' nessuna
+ * garanzia che siano ancora sensati: una versione precedente puo' aver
+ * scritto una chiave con un altro significato, la partizione puo' essersi
+ * corrotta, oppure un default puo' essere cambiato. Senza questo controllo
+ * i guasti sarebbero silenziosi e sconcertanti:
+ *
+ *   sleepSec a 0        -> risveglio immediato, il nodo si riavvia all'infinito
+ *                          e in poche ore scarica la batteria
+ *   irrigOra a 47       -> la finestra oraria non coincide MAI e la serra non
+ *                          viene piu' irrigata, senza un solo messaggio d'errore
+ *   flussoImpLitro a 0  -> litri sempre a zero, quindi falsi allarmi
+ *                          "nessun flusso" a ogni irrigazione
+ *
+ * Ogni correzione viene stampata: se compare, c'e' qualcosa da capire.
+ */
+static void validaImpostazioni() {
+  struct { const char* nome; bool fuori; } corretti[] = {
+    { "irrigOra",       g_cfg.irrigOra > 23 },
+    { "irrigMinuto",    g_cfg.irrigMinuto > 59 },
+    { "irrigDurataSec", g_cfg.irrigDurataSec == 0 || g_cfg.irrigDurataSec > IRRIG_MAX_SEC },
+    { "soilSoglia",     g_cfg.soilSoglia < -1 || g_cfg.soilSoglia > 100 },
+    { "sleepSec",       g_cfg.sleepSec < SLEEP_MIN_SEC || g_cfg.sleepSec > 86400UL },
+    { "voltDivider",    !(g_cfg.voltDivider > 0.1f && g_cfg.voltDivider < 100.0f) },
+    { "flussoImpLitro", !(g_cfg.flussoImpLitro > 1.0f && g_cfg.flussoImpLitro < 10000.0f) },
+  };
+
+  for (uint8_t i = 0; i < sizeof(corretti) / sizeof(corretti[0]); i++)
+    if (corretti[i].fuori)
+      Serial.printf("[CFG] ATTENZIONE: %s fuori range nella NVS, riporto al default.\n",
+                    corretti[i].nome);
+
+  if (g_cfg.irrigOra > 23)       g_cfg.irrigOra       = IRRIG_ORA_DEF;
+  if (g_cfg.irrigMinuto > 59)    g_cfg.irrigMinuto    = IRRIG_MIN_DEF;
+  if (g_cfg.irrigDurataSec == 0 || g_cfg.irrigDurataSec > IRRIG_MAX_SEC)
+                                 g_cfg.irrigDurataSec = IRRIG_SEC_DEF;
+  if (g_cfg.soilSoglia < -1 || g_cfg.soilSoglia > 100)
+                                 g_cfg.soilSoglia     = SOIL_SOGLIA_DEF;
+  if (g_cfg.sleepSec < SLEEP_MIN_SEC || g_cfg.sleepSec > 86400UL)
+                                 g_cfg.sleepSec       = SLEEP_TIME_SEC;
+  if (!(g_cfg.voltDivider > 0.1f && g_cfg.voltDivider < 100.0f))
+                                 g_cfg.voltDivider    = VOLT_DIVIDER_DEF;
+  if (!(g_cfg.flussoImpLitro > 1.0f && g_cfg.flussoImpLitro < 10000.0f))
+                                 g_cfg.flussoImpLitro = FLUSSO_IMP_LITRO_DEF;
+
+  // Contatori: un valore assurdo bloccherebbe l'irrigazione per sempre
+  if (g_cfg.irrigazioniOggi > IRRIG_MAX_AL_GIORNO) g_cfg.irrigazioniOggi = IRRIG_MAX_AL_GIORNO;
+  if (isnan(g_cfg.litriOggi)   || g_cfg.litriOggi   < 0.0f) g_cfg.litriOggi   = 0.0f;
+  if (isnan(g_cfg.litriTotali) || g_cfg.litriTotali < 0.0f) g_cfg.litriTotali = 0.0f;
+
+  for (uint8_t i = 0; i < 4; i++)
+    if (g_cfg.soilSecco[i] == g_cfg.soilBagnato[i]) {   // taratura impossibile
+      g_cfg.soilSecco[i]   = SOIL_RAW_SECCO_DEF;
+      g_cfg.soilBagnato[i] = SOIL_RAW_BAGNATO_DEF;
+    }
+}
+
 void impostazioniCarica() {
   applicaDefault();
 
@@ -80,6 +139,8 @@ void impostazioniCarica() {
 
   prefs.end();
   g_sporco = false;
+
+  validaImpostazioni();
 }
 
 void impostazioniSalva() {

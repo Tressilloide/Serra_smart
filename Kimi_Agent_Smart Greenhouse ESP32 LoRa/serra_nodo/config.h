@@ -44,7 +44,7 @@
 // ======================= IRRIGAZIONE — DEFAULT ==============================
 // Modificabili da Home Assistant con il comando SCHED.
 
-#define IRRIG_ORA_DEF    17       // Ora di inizio irrigazione (0-23)
+#define IRRIG_ORA_DEF    6       // Ora di inizio irrigazione (0-23)
 #define IRRIG_MIN_DEF    0        // Minuto di inizio (0-59)
 #define IRRIG_SEC_DEF    300      // Durata in secondi (300 = 5 minuti)
 #define IRRIG_AUTO_DEF   true     // Irrigazione automatica attiva?
@@ -58,7 +58,7 @@
 
 #define IRRIG_MAX_SEC          900   // Durata massima assoluta di UNA irrigazione
                                      // (15 min). Ogni richiesta viene clampata.
-#define IRRIG_MIN_INTERVALLO_M 1    // Minuti minimi tra due irrigazioni: blocca
+#define IRRIG_MIN_INTERVALLO_M 30    // Minuti minimi tra due irrigazioni: blocca
                                      // sia i comandi ripetuti sia i bug di logica
 #define IRRIG_MAX_AL_GIORNO    4     // Numero massimo di irrigazioni giornaliere
 #define BUDGET_LITRI_GIORNO    50.0f // Litri massimi al giorno (0 = disattivato).

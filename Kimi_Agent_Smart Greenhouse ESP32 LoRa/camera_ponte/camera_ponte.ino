@@ -68,6 +68,8 @@ static uint32_t ultimoTentativoMqtt = 0;
 static uint32_t ultimaDiagnostica   = 0;
 static uint32_t wifiGiuDa           = 0;
 
+static uint32_t riconnessioniWifi   = 0;
+static uint32_t riconnessioniMqtt   = 0;
 static uint32_t pacchettiRicevuti   = 0;
 static uint32_t pacchettiScartati   = 0;
 static uint32_t comandiConsegnati   = 0;
@@ -102,7 +104,18 @@ static void wifiSetup() {
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   WiFi.persistent(true);
-  WiFi.setSleep(true);              // modem-sleep: risparmio energetico
+  /*
+   * Modem-sleep DISATTIVATO, e non e' un dettaglio.
+   *
+   * Con il modem-sleep la radio WiFi si spegne a intervalli per risparmiare
+   * corrente. Su un dispositivo a batteria ha senso; qui il ponte sta attaccato
+   * a un alimentatore USB e il risparmio non serve a nulla, mentre il prezzo e'
+   * alto: la connessione TCP verso il broker cade in silenzio ogni tanto, e
+   * quando il ponte si riconnette il broker pubblica il Last Will della
+   * sessione morta. Risultato in Home Assistant: tutte le entita' della serra
+   * diventano "non disponibile" per un secondo e poi tornano, a ripetizione.
+   */
+  WiFi.setSleep(false);
   WiFi.setHostname(OTA_HOSTNAME);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   Serial.printf("[WiFi] Connessione a %s ...\n", WIFI_SSID);
@@ -113,8 +126,11 @@ static void wifiSetup() {
 static void wifiMantieni() {
   if (WiFi.status() == WL_CONNECTED) {
     if (wifiGiuDa != 0) {
-      Serial.printf("[WiFi] Riconnesso: %s (RSSI %d dBm)\n",
-                    WiFi.localIP().toString().c_str(), WiFi.RSSI());
+      riconnessioniWifi++;
+      Serial.printf("[WiFi] Riconnesso dopo %lu s: %s (RSSI %d dBm) - riconnessione n.%lu\n",
+                    (unsigned long)((millis() - wifiGiuDa) / 1000UL),
+                    WiFi.localIP().toString().c_str(), WiFi.RSSI(),
+                    (unsigned long)riconnessioniWifi);
       wifiGiuDa = 0;
     }
     return;
@@ -170,7 +186,10 @@ static void mqttMantieni() {
   // come non disponibili invece di mostrare valori vecchi come se fossero attuali.
   if (mqtt.connect(MQTT_CLIENT_ID, MQTT_USER, MQTT_PASS,
                    TOPIC_PONTE, 1, true, "offline")) {
-    Serial.println(F("OK!"));
+    riconnessioniMqtt++;
+    Serial.printf("OK! (connessione n.%lu, uptime %lu s)\n",
+                  (unsigned long)riconnessioniMqtt,
+                  (unsigned long)(millis() / 1000UL));
     mqtt.publish(TOPIC_PONTE, "online", true);
     mqtt.subscribe(TOPIC_CMD_SUB, 1);
 
@@ -371,11 +390,14 @@ static void pubblicaDiagnostica() {
   char payload[320];
   snprintf(payload, sizeof(payload),
     "{\"uptime\":%lu,\"pkt\":%lu,\"scartati\":%lu,\"cmd_consegnati\":%lu,"
+    "\"riconn_wifi\":%lu,\"riconn_mqtt\":%lu,"
     "\"coda\":%u,\"wifi_rssi\":%d,\"heap\":%lu,\"lora_rssi\":%d,\"lora_snr\":%.1f,"
     "\"ip\":\"%s\",\"fw\":\"%s\"}",
     (unsigned long)(millis() / 1000UL),
     (unsigned long)pacchettiRicevuti, (unsigned long)pacchettiScartati,
-    (unsigned long)comandiConsegnati, codaConta(),
+    (unsigned long)comandiConsegnati,
+    (unsigned long)riconnessioniWifi, (unsigned long)riconnessioniMqtt,
+    codaConta(),
     WiFi.RSSI(), (unsigned long)ESP.getFreeHeap(),
     ultimoRssi, ultimoSnr,
     WiFi.localIP().toString().c_str(), FW_VERSION_PONTE);

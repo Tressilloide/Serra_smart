@@ -358,6 +358,12 @@ static const DiagPonte DIAG[] = {
   { "ponte_pkt",    "Pacchetti ricevuti",  "pkt",            nullptr, nullptr,         "mdi:package-down"    },
   { "ponte_heap",   "Ponte memoria libera","heap",           "B",   "data_size",       "mdi:memory"          },
   { "ponte_cmd",    "Comandi consegnati",  "cmd_consegnati", nullptr, nullptr,         "mdi:send-check"      },
+  // Questi due sono la spia dei "non disponibile" lampeggianti in Home
+  // Assistant: ogni riconnessione MQTT fa pubblicare al broker il Last Will
+  // della sessione morta, e per un secondo tutte le entita' della serra
+  // spariscono. Se il contatore cresce di continuo, la connessione e' instabile.
+  { "ponte_rwifi",  "Riconnessioni WiFi",  "riconn_wifi",    nullptr, nullptr,         "mdi:wifi-sync"       },
+  { "ponte_rmqtt",  "Riconnessioni MQTT",  "riconn_mqtt",    nullptr, nullptr,         "mdi:lan-disconnect"  },
 };
 
 void discoveryPubblicaPonte() {

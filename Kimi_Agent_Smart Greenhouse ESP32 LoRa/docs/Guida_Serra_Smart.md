@@ -20,7 +20,7 @@ completo da Home Assistant.
 │  • Luce (GPIO 32)        │                        │  • Coda comandi        │
 │  • Tensione (GPIO 33)    │                        │  • Ora NTP             │
 │  • Terreno ×2 (34, 35)   │                        │  • Discovery HA        │
-│  • Flussometro (17)      │                        │  • Sempre acceso       │
+│  • Flussometro (15)      │                        │  • Sempre acceso       │
 │  • microSD (backlog)     │                        │                        │
 │  • Relay irrigazione     │                        └───────────┬────────────┘
 │  • Deep sleep 15 min     │                                    │ WiFi / MQTT
@@ -491,6 +491,7 @@ al punto successivo.
 | Sintomo | Cosa controllare |
 |---|---|
 | `[LoRa] ERRORE: modulo non trovato` | Cablaggio SPI, NSS su GPIO 5, alimentazione 3,3 V, **antenna montata** |
+| Entita' che lampeggiano fra "non disponibile" e il valore, a un secondo di distanza | Il ponte sta perdendo e riprendendo la connessione MQTT: a ogni riconnessione il broker pubblica il Last Will della sessione morta. Guarda `sensor.serra_riconnessioni_mqtt`: se cresce, la connessione e' instabile. Controlla `sensor.serra_ponte_segnale_wifi` (sotto i -75 dBm e' debole) e assicurati di avere il firmware con `WiFi.setSleep(false)`. Se invece e' `sensor.serra_ponte_uptime` ad azzerarsi, il ponte si sta proprio riavviando |
 | Flussometro sempre a zero | Il pin e' inservibile? Sulle schede a **38 pin** (WROVER) i GPIO 16 e 17 sono occupati dalla PSRAM. Carica `test_flusso/` sulla scheda del nodo: separa hardware e firmware in un colpo |
 | Il nodo a volte non parte | GPIO 12 alto al boot: manca il pulldown da 10k. Vedi [PINOUT.md §2.4](PINOUT.md) |
 | Nessun ACK | Stessi `LORA_BAND`, SF, BW e CR sui due sketch? Ponte acceso e in ascolto? |

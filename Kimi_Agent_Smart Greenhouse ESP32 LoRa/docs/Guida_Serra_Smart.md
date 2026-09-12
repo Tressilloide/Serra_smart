@@ -486,6 +486,38 @@ al punto successivo.
 
 ---
 
+## 9.bis Come si legge la qualita' del collegamento
+
+Due numeri dicono quasi tutto, e vale la pena imparare a leggerli perche'
+distinguono un guasto da un semplice calo di segnale.
+
+**RSSI LoRa** (`sensor.serra_segnale_lora`), quanto arriva forte il segnale:
+
+| Valore | Significato |
+|---|---|
+| da −30 a −70 dBm | ottimo, tipico di nodo e ponte nella stessa stanza |
+| da −70 a −100 dBm | normale a distanza, funziona |
+| da −100 a −115 dBm | margine ridotto: i pacchetti iniziano a perdersi |
+| sotto −115 dBm | al limite della sensibilita', link inaffidabile |
+
+**SNR LoRa** (`sensor.serra_snr_lora`), quanto il segnale emerge dal rumore:
+sopra 0 dB e' buono, fino a −7,5 dB il LoRa a SF7 riesce ancora a decodificare,
+sotto e' perso.
+
+> **Caso reale, utile da ricordare.** Durante le prove da banco il nodo
+> arrivava a −37 dBm. In serra, con il connettore dell'antenna del ponte
+> mal serrato, il valore e' sceso a **−97 dBm con SNR −1,5 dB**: sessanta
+> decibel persi, cioe' un milione di volte meno potenza. Il collegamento
+> funzionava ancora, ma con margine quasi nullo, ed e' rimasto muto per otto
+> ore di fila. Se vedi l'RSSI peggiorare di colpo di decine di dB, il primo
+> sospettato e' sempre un connettore d'antenna, non il software.
+
+**RSSI WiFi del ponte** (`sensor.serra_ponte_segnale_wifi`): sopra −70 dBm
+bene, fra −70 e −80 accettabile, sotto −80 la connessione inizia a cadere.
+Se `sensor.serra_riconnessioni_mqtt` continua a salire, e' quasi sempre questo.
+
+---
+
 ## 10. Risoluzione problemi
 
 | Sintomo | Cosa controllare |

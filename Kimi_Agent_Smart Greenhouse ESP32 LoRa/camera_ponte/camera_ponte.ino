@@ -126,7 +126,13 @@ static void wifiSetup() {
 static void wifiMantieni() {
   if (WiFi.status() == WL_CONNECTED) {
     if (wifiGiuDa != 0) {
-      riconnessioniWifi++;
+      // Stesso ragionamento del contatore MQTT: all'avvio il WiFi risulta
+      // "giu'" per i primi secondi, prima ancora di essersi mai collegato.
+      // Quell'aggancio iniziale non e' una riconnessione.
+      static bool primoAggancio = true;
+      if (primoAggancio) primoAggancio = false;
+      else               riconnessioniWifi++;
+
       Serial.printf("[WiFi] Riconnesso dopo %lu s: %s (RSSI %d dBm) - riconnessione n.%lu\n",
                     (unsigned long)((millis() - wifiGiuDa) / 1000UL),
                     WiFi.localIP().toString().c_str(), WiFi.RSSI(),
@@ -186,8 +192,15 @@ static void mqttMantieni() {
   // come non disponibili invece di mostrare valori vecchi come se fossero attuali.
   if (mqtt.connect(MQTT_CLIENT_ID, MQTT_USER, MQTT_PASS,
                    TOPIC_PONTE, 1, true, "offline")) {
-    riconnessioniMqtt++;
-    Serial.printf("OK! (connessione n.%lu, uptime %lu s)\n",
+    // La PRIMA connessione non e' una riconnessione: contarla farebbe
+    // sembrare instabile un ponte appena avviato che invece sta benissimo.
+    // Questi contatori servono a rispondere a "sta reggendo?", quindi devono
+    // partire da zero e restarci finche' non succede davvero qualcosa.
+    static bool primaConnessione = true;
+    if (primaConnessione) primaConnessione = false;
+    else                  riconnessioniMqtt++;
+
+    Serial.printf("OK! (riconnessioni finora: %lu, uptime %lu s)\n",
                   (unsigned long)riconnessioniMqtt,
                   (unsigned long)(millis() / 1000UL));
     mqtt.publish(TOPIC_PONTE, "online", true);

@@ -241,21 +241,61 @@ static bool eNumerico(const char* s) {
  */
 static size_t costruisciJson(const PacchettoKV& pkt, char* out, size_t maxOut,
                              int rssi, float snr) {
-  size_t pos = 0;
-  pos += snprintf(out + pos, maxOut - pos, "{");
-
-  for (uint8_t i = 0; i < pkt.n() && pos < maxOut - 48; i++) {
-    const CampoKV& c = pkt.campo(i);
-    if (eNumerico(c.valore))
-      pos += snprintf(out + pos, maxOut - pos, "%s\"%s\":%s", i ? "," : "", c.chiave, c.valore);
-    else
-      pos += snprintf(out + pos, maxOut - pos, "%s\"%s\":\"%s\"", i ? "," : "", c.chiave, c.valore);
+  /*
+   * La coda del JSON viene preparata PRIMA e il suo spazio riservato per tutto
+   * il ciclo. Non e' pignoleria: se il buffer si riempisse con i campi, la
+   * graffa di chiusura verrebbe troncata e Home Assistant scarterebbe l'intero
+   * pacchetto come JSON non valido — tutti i sensori fermi, senza un errore
+   * che spieghi perche'. Meglio perdere qualche campo che l'intero messaggio.
+   */
+  char coda[96];
+  int  lCoda = snprintf(coda, sizeof(coda),
+                        ",\"rssi\":%d,\"snr\":%.1f,\"ts_ponte\":%lu}",
+                        rssi, snr, (unsigned long)oraCorrente());
+  if (lCoda < 0 || (size_t)lCoda >= sizeof(coda) || maxOut < (size_t)lCoda + 4) {
+    out[0] = '\0';
+    return 0;
   }
 
-  // Dati aggiunti dal ponte: qualita' del collegamento radio e ora di ricezione
-  pos += snprintf(out + pos, maxOut - pos,
-                  ",\"rssi\":%d,\"snr\":%.1f,\"ts_ponte\":%lu}",
-                  rssi, snr, (unsigned long)oraCorrente());
+  size_t pos = 0;
+  out[pos++] = '{';
+  out[pos]   = '\0';
+
+  bool primo = true, tagliato = false;
+  char campo[PROTO_LEN_CHIAVE + PROTO_LEN_VALORE + 8];
+
+  for (uint8_t i = 0; i < pkt.n(); i++) {
+    const CampoKV& c = pkt.campo(i);
+
+    int l = eNumerico(c.valore)
+          ? snprintf(campo, sizeof(campo), "%s\"%s\":%s",
+                     primo ? "" : ",", c.chiave, c.valore)
+          : snprintf(campo, sizeof(campo), "%s\"%s\":\"%s\"",
+                     primo ? "" : ",", c.chiave, c.valore);
+    if (l < 0 || (size_t)l >= sizeof(campo)) continue;   // campo anomalo: saltato
+
+    // Il campo ci sta solo se dopo di lui ci sta ancora tutta la coda.
+    if (pos + (size_t)l + (size_t)lCoda + 1 > maxOut) { tagliato = true; break; }
+
+    memcpy(out + pos, campo, (size_t)l);
+    pos += (size_t)l;
+    out[pos] = '\0';
+    primo = false;
+  }
+
+  // Se non e' entrato nessun campo va tolta la virgola iniziale della coda,
+  // o verrebbe fuori {,"rssi":...} che non e' JSON valido.
+  const char* codaDa  = primo ? coda + 1 : coda;
+  size_t      codaLen = primo ? (size_t)lCoda - 1 : (size_t)lCoda;
+
+  memcpy(out + pos, codaDa, codaLen);
+  pos += codaLen;
+  out[pos] = '\0';
+
+  if (tagliato)
+    Serial.printf("[MQTT] ATTENZIONE: JSON oltre i %u byte, alcuni campi omessi. "
+                  "Alza la dimensione del buffer in gestisciLoRa().\n", (unsigned)maxOut);
+
   return pos;
 }
 
@@ -270,17 +310,32 @@ static size_t costruisciJson(const PacchettoKV& pkt, char* out, size_t maxOut,
  */
 static void inviaAck(uint32_t seq, bool allegaComando) {
   char ack[PROTO_MAX_PAYLOAD + 1];
-  int  pos = snprintf(ack, sizeof(ack), "%s;s=%lu", PROTO_PREFIX_ACK, (unsigned long)seq);
+
+  /*
+   * snprintf ritorna quanti caratteri AVREBBE scritto, non quanti ne ha
+   * scritti davvero. Accumulando quel valore senza limitarlo, "pos" puo'
+   * superare la dimensione del buffer e la sottrazione successiva va in
+   * underflow (sono size_t), passando a snprintf una dimensione enorme.
+   * Da qui in poi si scriverebbe oltre il buffer. Questa lambda tiene "pos"
+   * dentro i limiti qualunque cosa succeda.
+   */
+  size_t pos = 0;
+  auto accoda = [&](const char* fmt, auto... args) {
+    if (pos >= sizeof(ack) - 1) return;
+    int n = snprintf(ack + pos, sizeof(ack) - pos, fmt, args...);
+    if (n < 0) return;
+    pos = (size_t)n >= sizeof(ack) - pos ? sizeof(ack) - 1 : pos + (size_t)n;
+  };
+
+  accoda("%s;s=%lu", PROTO_PREFIX_ACK, (unsigned long)seq);
 
   uint32_t adesso = oraCorrente();
-  if (adesso > 0)
-    pos += snprintf(ack + pos, sizeof(ack) - pos, ";now=%lu", (unsigned long)adesso);
+  if (adesso > 0) accoda(";now=%lu", (unsigned long)adesso);
 
   if (allegaComando && !codaVuota()) {
     ComandoInCoda cmd;
     if (codaEstrai(cmd)) {
-      pos += snprintf(ack + pos, sizeof(ack) - pos, ";c=%lu;o=%s;a=%s",
-                      (unsigned long)cmd.id, cmd.opcode, cmd.args);
+      accoda(";c=%lu;o=%s;a=%s", (unsigned long)cmd.id, cmd.opcode, cmd.args);
       comandiConsegnati++;
     }
   }
@@ -348,7 +403,13 @@ static void gestisciLoRa() {
 
   const char* topic = storico ? TOPIC_STORICO : TOPIC_STATO;
 
-  char json[640];
+  /*
+   * 900 byte e non 640: un pacchetto LoRa pieno (250 byte, fino a 28 campi)
+   * espanso in JSON con virgolette e nomi di chiave puo' superare
+   * abbondantemente i 640, e il buffer precedente era piu' piccolo di quello
+   * che il protocollo stesso permette di ricevere.
+   */
+  char json[900];
   costruisciJson(pkt, json, sizeof(json), ultimoRssi, ultimoSnr);
   Serial.printf("[MQTT] %s <- %s\n", topic, json);
 
@@ -442,7 +503,9 @@ void setup() {
 
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
   mqtt.setCallback(mqttCallback);
-  mqtt.setBufferSize(1024);       // i payload di discovery sono lunghi
+  // Deve contenere il piu' grande fra: payload di discovery (~400 byte) e
+   // JSON di stato (fino a 900), piu' topic e intestazione MQTT.
+  mqtt.setBufferSize(1536);
   mqtt.setKeepAlive(30);
   mqtt.setSocketTimeout(5);
 

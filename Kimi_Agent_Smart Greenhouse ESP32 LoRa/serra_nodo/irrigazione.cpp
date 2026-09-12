@@ -180,13 +180,30 @@ EsitoIrrigazione irrigazioneEsegui(uint32_t durataSec, float litriTarget, uint32
        */
       if (trascorso - ultimoLog >= 2000UL) {
         ultimoLog = trascorso;
-        uint32_t transizioni = flussoSondaTransizioni(200);
-        Serial.printf("[IRRIG] %2lus/%lus  impulsi=%lu  %.3f L  pin=%d  transizioni=%lu\n",
-                      (unsigned long)(trascorso / 1000UL),
-                      (unsigned long)durataSec,
-                      (unsigned long)flussoImpulsi(), litri,
-                      digitalRead(PIN_FLUSSO),
-                      (unsigned long)transizioni);
+        uint32_t imp = flussoImpulsi();
+
+        if (imp > 0) {
+          // Tutto regolare: riga breve, nessun campionamento.
+          Serial.printf("[IRRIG] %2lus/%lus  impulsi=%lu  %.3f L\n",
+                        (unsigned long)(trascorso / 1000UL),
+                        (unsigned long)durataSec, (unsigned long)imp, litri);
+        } else {
+          /*
+           * Nessun impulso: solo qui vale la pena spendere 200 ms a campionare
+           * il pin, perche' e' l'unico caso in cui c'e' qualcosa da capire.
+           * Farlo sempre significherebbe passare il 10% dell'irrigazione in
+           * un ciclo di attesa attiva, durante il quale non si controllano
+           * ne' il target volumetrico ne' il budget litri.
+           */
+          uint32_t transizioni = flussoSondaTransizioni(200);
+          Serial.printf("[IRRIG] %2lus/%lus  impulsi=0  pin=%d  transizioni=%lu  %s\n",
+                        (unsigned long)(trascorso / 1000UL),
+                        (unsigned long)durataSec,
+                        digitalRead(PIN_FLUSSO),
+                        (unsigned long)transizioni,
+                        transizioni == 0 ? "(nessun segnale sul filo)"
+                                         : "(SEGNALE PRESENTE, interrupt non conta!)");
+        }
       }
 
       // Obiettivo volumetrico raggiunto

@@ -27,6 +27,24 @@ bool backlogInit() {
     return false;
   }
 
+  /*
+   * Recupero dopo un'interruzione a meta' operazione.
+   *
+   * Il riordino della coda avviene copiando i record non consegnati in un
+   * file temporaneo, cancellando l'originale e rinominando il temporaneo.
+   * Se la corrente va via fra la cancellazione e il rinomino — o se il
+   * rinomino fallisce — resta solo il temporaneo, e tutti i record ancora
+   * da consegnare sarebbero abbandonati li' senza che nessuno li guardi piu'.
+   * Proprio lo scenario contro cui il backlog esiste.
+   */
+  if (!SD.exists(FILE_BACKLOG) && SD.exists(FILE_BACKLOG_TMP)) {
+    Serial.println(F("[SD] Trovato un backlog temporaneo orfano: lo recupero."));
+    if (SD.rename(FILE_BACKLOG_TMP, FILE_BACKLOG))
+      backlogLog("BACKLOG recuperato da file temporaneo orfano");
+    else
+      Serial.println(F("[SD] ERRORE: recupero del temporaneo fallito."));
+  }
+
   Serial.printf("[SD] Scheda montata (%llu MB). Record in coda: %lu\n",
                 SD.cardSize() / (1024ULL * 1024ULL), (unsigned long)backlogConta());
   return true;
@@ -34,8 +52,22 @@ bool backlogInit() {
 
 // ---------------------------------------------------------------------------
 
+/*
+ * Il conteggio richiede di scorrere tutto il file, quindi viene memorizzato.
+ * Serve davvero: finisce nel blocco di stato di OGNI pacchetto, e durante una
+ * finestra di manutenzione i pacchetti sono uno ogni cinque secondi. Con una
+ * coda da qualche centinaio di kilobyte significherebbe rileggere la microSD
+ * da capo in continuazione, consumando proprio i minuti della manutenzione.
+ * La cache viene invalidata dalle sole tre funzioni che cambiano il file.
+ */
+static uint32_t g_conta       = 0;
+static bool     g_contaValida = false;
+
+static void invalidaConta() { g_contaValida = false; }
+
 uint32_t backlogConta() {
-  if (!g_sdOk || !SD.exists(FILE_BACKLOG)) return 0;
+  if (g_contaValida) return g_conta;
+  if (!g_sdOk || !SD.exists(FILE_BACKLOG)) { g_conta = 0; g_contaValida = true; return 0; }
 
   File f = SD.open(FILE_BACKLOG, FILE_READ);
   if (!f) return 0;
@@ -48,6 +80,9 @@ uint32_t backlogConta() {
     wdtNutri();
   }
   f.close();
+
+  g_conta       = righe;
+  g_contaValida = true;
   return righe;
 }
 
@@ -58,6 +93,8 @@ uint32_t backlogConta() {
 // ---------------------------------------------------------------------------
 
 static bool copiaCodaESostituisci(uint32_t daOffset) {
+  invalidaConta();
+
   File src = SD.open(FILE_BACKLOG, FILE_READ);
   if (!src) return false;
 
@@ -116,12 +153,24 @@ static void applicaTettoDimensione() {
   while (f.available() && f.read() != '\n') { /* avanza fino a fine riga */ }
   taglio = f.position();
 
-  // Conta quanti record stiamo perdendo, per poterlo dire a Home Assistant
+  /*
+   * Conta quanti record stiamo perdendo, per poterlo dire a Home Assistant.
+   * A blocchi da 512 byte e non byte per byte: il taglio puo' valere decine
+   * di migliaia di byte, e altrettante chiamate di lettura attraverso lo
+   * strato FAT terrebbero occupato il nodo per svariati secondi, per giunta
+   * senza nutrire il watchdog.
+   */
   f.seek(0);
   uint32_t letto = 0;
-  while (letto < taglio && f.available()) {
-    if (f.read() == '\n') scartati++;
-    letto++;
+  uint8_t  buf[512];
+  while (letto < taglio) {
+    uint32_t quanti = taglio - letto;
+    if (quanti > sizeof(buf)) quanti = sizeof(buf);
+    int n = f.read(buf, quanti);
+    if (n <= 0) break;
+    for (int i = 0; i < n; i++) if (buf[i] == '\n') scartati++;
+    letto += (uint32_t)n;
+    wdtNutri();
   }
   f.close();
 
@@ -149,6 +198,7 @@ bool backlogAccoda(const char* riga) {
   f.print('\n');          // solo LF: println scriverebbe CRLF
   f.close();
 
+  invalidaConta();
   applicaTettoDimensione();
   return true;
 }
@@ -213,6 +263,7 @@ uint32_t backlogDrena(FnInvioRecord invia) {
 
 void backlogSvuota() {
   if (!g_sdOk) return;
+  invalidaConta();
   SD.remove(FILE_BACKLOG);
   SD.remove(FILE_BACKLOG_TMP);
   Serial.println(F("[SD] Backlog svuotato su richiesta."));

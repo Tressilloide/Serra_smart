@@ -388,6 +388,11 @@ static const DiagPonte DIAG[] = {
   // Assistant: ogni riconnessione MQTT fa pubblicare al broker il Last Will
   // della sessione morta, e per un secondo tutte le entita' della serra
   // spariscono. Se il contatore cresce di continuo, la connessione e' instabile.
+  // Il blocco contiguo piu' grande e' la spia della frammentazione della heap:
+  // se cala nei giorni mentre la memoria libera resta stabile, la memoria si
+  // sta sbriciolando e prima o poi un'allocazione fallira'.
+  { "ponte_hblk",   "Ponte blocco memoria","heap_blocco",    "B",   "data_size",       "mdi:memory"          },
+  { "ponte_hmin",   "Ponte memoria minima","heap_minimo",    "B",   "data_size",       "mdi:memory"          },
   { "ponte_rwifi",  "Riconnessioni WiFi",  "riconn_wifi",    nullptr, nullptr,         "mdi:wifi-sync"       },
   { "ponte_rmqtt",  "Riconnessioni MQTT",  "riconn_mqtt",    nullptr, nullptr,         "mdi:lan-disconnect"  },
 };

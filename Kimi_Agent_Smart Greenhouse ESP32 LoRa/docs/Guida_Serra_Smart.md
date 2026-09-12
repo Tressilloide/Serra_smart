@@ -512,6 +512,25 @@ sotto e' perso.
 > ore di fila. Se vedi l'RSSI peggiorare di colpo di decine di dB, il primo
 > sospettato e' sempre un connettore d'antenna, non il software.
 
+**Memoria del ponte.** Il ponte resta acceso per settimane, quindi vale la
+pena sapere leggere tre numeri invece di uno:
+
+| Entita' | Cosa dice |
+|---|---|
+| `sensor.serra_ponte_memoria_libera` | memoria libera adesso |
+| `sensor.serra_ponte_blocco_memoria` | il piu' grande blocco **contiguo** allocabile |
+| `sensor.serra_ponte_memoria_minima` | il minimo storico di memoria libera |
+
+Il numero che conta e' il secondo. La memoria si **frammenta**: allocazioni e
+rilasci di dimensioni sempre diverse lasciano buchi, e col tempo il totale
+libero puo' restare identico mentre il piu' grande blocco contiguo si
+rimpicciolisce, finche' un'allocazione fallisce e il ponte si riavvia.
+Guardando solo la memoria libera non si vede arrivare niente.
+
+Regola pratica: se dopo giorni `blocco_memoria` cala costantemente mentre
+`memoria_libera` resta piatta, c'e' frammentazione. Se restano entrambi
+stabili, non ce n'e'.
+
 **RSSI WiFi del ponte** (`sensor.serra_ponte_segnale_wifi`): sopra −70 dBm
 bene, fra −70 e −80 accettabile, sotto −80 la connessione inizia a cadere.
 Se `sensor.serra_riconnessioni_mqtt` continua a salire, e' quasi sempre questo.

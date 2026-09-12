@@ -474,11 +474,16 @@ static void pubblicaDiagnostica() {
   if (millis() - ultimaDiagnostica < DIAG_INTERVALLO_MS) return;
   ultimaDiagnostica = millis();
 
-  char payload[320];
+  // 448 e non 320: con tutti i contatori ai valori massimi il JSON arriva a
+  // 284 byte, e 36 byte di margine sono troppo pochi per aggiungerci un altro
+  // campo domani senza accorgersi del troncamento.
+  char payload[448];
   snprintf(payload, sizeof(payload),
     "{\"uptime\":%lu,\"pkt\":%lu,\"scartati\":%lu,\"cmd_consegnati\":%lu,"
     "\"riconn_wifi\":%lu,\"riconn_mqtt\":%lu,"
-    "\"coda\":%u,\"wifi_rssi\":%d,\"heap\":%lu,\"lora_rssi\":%d,\"lora_snr\":%.1f,"
+    "\"coda\":%u,\"wifi_rssi\":%d,\"heap\":%lu,"
+    "\"heap_blocco\":%lu,\"heap_minimo\":%lu,"
+    "\"lora_rssi\":%d,\"lora_snr\":%.1f,"
     "\"ip\":\"%s\",\"fw\":\"%s\"}",
     (unsigned long)(millis() / 1000UL),
     (unsigned long)pacchettiRicevuti, (unsigned long)pacchettiScartati,
@@ -486,6 +491,24 @@ static void pubblicaDiagnostica() {
     (unsigned long)riconnessioniWifi, (unsigned long)riconnessioniMqtt,
     codaConta(),
     WiFi.RSSI(), (unsigned long)ESP.getFreeHeap(),
+    /*
+     * heap_blocco e heap_minimo servono a rispondere alla domanda che la sola
+     * memoria libera NON risolve: la heap si sta frammentando?
+     *
+     * Un uso intenso di String alloca e libera blocchi di dimensioni sempre
+     * diverse, lasciando buchi. Dopo settimane il totale libero puo' restare
+     * identico mentre il piu' grande blocco CONTIGUO si rimpicciolisce, finche'
+     * un'allocazione fallisce e il dispositivo si riavvia. Guardando solo la
+     * memoria libera non si vede arrivare nulla.
+     *
+     *   heap_blocco  = il piu' grande blocco allocabile in questo momento.
+     *                  Se cala giorno dopo giorno mentre "heap" resta stabile,
+     *                  quella e' frammentazione.
+     *   heap_minimo  = il minimo storico di memoria libera dall'avvio, utile a
+     *                  sapere quanto margine c'e' stato davvero nei picchi.
+     */
+    (unsigned long)ESP.getMaxAllocHeap(),
+    (unsigned long)ESP.getMinFreeHeap(),
     ultimoRssi, ultimoSnr,
     WiFi.localIP().toString().c_str(), FW_VERSION_PONTE);
 

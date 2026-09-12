@@ -84,6 +84,27 @@
 // Quanti comandi tenere in coda in RAM.
 #define CODA_CMD_MAX         8
 
+/*
+ * SCADENZA DEI COMANDI "DI AZIONE".
+ *
+ * I comandi arrivano come messaggi MQTT ritenuti, e il broker li conserva
+ * finche' il ponte non li consegna. Per le impostazioni va benissimo: se
+ * cambi la durata dell'irrigazione e il nodo dorme, il valore aspetta.
+ *
+ * Per i comandi che FANNO qualcosa e' invece pericoloso. Un "Irriga ora"
+ * premuto e rimasto sul broker perche' il ponte era spento viene consegnato
+ * alla prima occasione utile, e la serra si annaffia da sola a un orario
+ * qualunque, magari il giorno dopo. E' successo davvero.
+ *
+ * Due protezioni:
+ *  1. un comando di azione che arriva nella raffica di messaggi ritenuti
+ *     subito dopo la sottoscrizione viene scartato: e' un residuo, non una
+ *     richiesta appena fatta (vedi CODA_FINESTRA_RETAINED_MS)
+ *  2. un comando di azione rimasto in coda piu' di questo tempo scade
+ */
+#define CMD_TTL_AZIONE_MIN     30      // minuti
+#define CODA_FINESTRA_RETAINED_MS 3000UL
+
 // ======================= NTP ================================================
 // L'ora corretta viaggia su ogni ACK: e' cosi' che il DS1307 del nodo si
 // risincronizza da solo quando la batteria tampone si scarica.

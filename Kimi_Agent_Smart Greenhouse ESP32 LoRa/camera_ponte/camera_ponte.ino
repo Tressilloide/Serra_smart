@@ -192,6 +192,9 @@ static void mqttMantieni() {
                   (unsigned long)(millis() / 1000UL));
     mqtt.publish(TOPIC_PONTE, "online", true);
     mqtt.subscribe(TOPIC_CMD_SUB, 1);
+    // Subito dopo la sottoscrizione il broker riversa i messaggi ritenuti:
+    // i comandi di azione che arrivano adesso sono residui, non richieste.
+    codaSegnalaSottoscrizione();
 
     // Ripubblicazione completa: cosi' le entita' si ricreano anche se il
     // broker ha perso i retained (per esempio dopo un suo riavvio).

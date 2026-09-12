@@ -45,9 +45,23 @@
 
 struct ComandoInCoda {
   uint32_t id;
+  uint32_t ricevutoMs;   // quando il ponte l'ha ricevuto, per la scadenza
   char     opcode[12];
   char     args[48];
 };
+
+/*
+ * true per i comandi che FANNO qualcosa adesso (irrigare, riavviare,
+ * restare svegli), in contrapposizione a quelli che IMPOSTANO un valore
+ * (durata, orario, soglia). Solo i primi scadono: un'impostazione vecchia
+ * e' comunque quella giusta, un'irrigazione vecchia no.
+ */
+bool comandoEffimero(const char* opcode);
+
+// Da chiamare subito dopo la sottoscrizione a serra/nodo/cmd/+: apre la
+// finestra in cui i comandi di azione in arrivo sono considerati residui
+// ritenuti sul broker, e non richieste appena fatte.
+void codaSegnalaSottoscrizione();
 
 void codaInit(PubSubClient* client);
 

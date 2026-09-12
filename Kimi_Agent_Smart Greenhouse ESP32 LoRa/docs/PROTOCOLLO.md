@@ -173,6 +173,7 @@ momento in cui consegna il comando al nodo.
 | `SCHED` | `ora,minuto,durata_s` | Imposta tutto insieme |
 | `DUR` | `secondi` | Solo la durata |
 | `ORA` | `HH:MM[:SS]` | Solo l'orario |
+| `ORAH` / `ORAM` | `0-23` / `0-59` | Ora e minuto separati (usati dalle due entita number di HA, perche le entita time non vengono create su tutte le installazioni) |
 | `SOIL` | `soglia%` (−1 disattiva) | Soglia per l'irrigazione condizionata |
 | `SLEEP` | `secondi` | Intervallo di deep sleep |
 | `TIME` | `epoch` | Forza la sincronizzazione dell'orologio |

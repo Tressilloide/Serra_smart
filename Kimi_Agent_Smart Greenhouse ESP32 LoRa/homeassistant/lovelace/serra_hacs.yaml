@@ -153,8 +153,10 @@ views:
 
           - type: entities
             entities:
-              - entity: time.serra_orario_irrigazione
-                name: Orario programmato
+              - entity: number.serra_orario_irrigazione_ora
+                name: Orario - ora
+              - entity: number.serra_orario_irrigazione_minuto
+                name: Orario - minuto
               - entity: sensor.serra_esito_irrigazione
                 name: Esito ultimo ciclo
 

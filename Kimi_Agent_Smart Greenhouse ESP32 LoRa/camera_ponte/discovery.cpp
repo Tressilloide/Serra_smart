@@ -40,7 +40,13 @@ static const EntitaSensore ENTITA[] = {
   { "soil3",    "Umidita' terreno 3",     "%",   "moisture",        "measurement",  "mdi:water-percent",     false, false },
   { "soil4",    "Umidita' terreno 4",     "%",   "moisture",        "measurement",  "mdi:water-percent",     false, false },
 
-  { "acqua",    "Acqua ultima irrigazione","L",  "water",           "measurement",  "mdi:water",             false, false },
+  // Niente device_class "water" su questo: in Home Assistant quella classe
+  // ammette solo state_class "total" o "total_increasing", perche' descrive
+  // un contatore. Qui invece il valore e' il volume della SINGOLA irrigazione,
+  // che sale e scende. Con la combinazione sbagliata HA lo segnalava a ogni
+  // avvio ("is using state class measurement which is impossible considering
+  // device class water") e rifiutava di tenerne le statistiche.
+  { "acqua",    "Acqua ultima irrigazione","L",  nullptr,           "measurement",  "mdi:water",             false, false },
   // total_increasing: Home Assistant lo tratta come un contatore e ci puo'
   // costruire sopra un utility_meter per i totali giornalieri e mensili.
   { "acquaTot", "Acqua totale",           "L",   "water",           "total_increasing", "mdi:counter",       false, false },
@@ -253,13 +259,33 @@ void discoveryPubblicaComandi() {
     TOPIC_CMD_BASE, TOPIC_STATO, TOPIC_PONTE, DEV);
   pubblica(topic, payload);
 
-  // --- Orario programmato ---------------------------------------------------
-  snprintf(topic, sizeof(topic), HA_DISCOVERY_PREFIX "/time/serra_orario/config");
+  /*
+   * Orario programmato: DUE number, ora e minuto, invece di una sola entita'
+   * "time".
+   *
+   * Sarebbe stato piu' elegante un time, che accetta direttamente "17:30:00".
+   * Verificato pero' su un'installazione reale (Home Assistant 2025.11) che
+   * le discovery del dominio "time" vengono semplicemente ignorate: nello
+   * stesso istante e con lo stesso prefisso, un "sensor" minimale veniva
+   * creato e un "time" altrettanto minimale no. Meglio due controlli un po'
+   * meno belli ma che esistono di sicuro, che uno elegante che non compare.
+   */
+  snprintf(topic, sizeof(topic), HA_DISCOVERY_PREFIX "/number/serra_orario_ora/config");
   snprintf(payload, sizeof(payload),
-    "{\"name\":\"Orario irrigazione\",\"uniq_id\":\"serra_orario\","
-    "\"cmd_t\":\"%s/ORA\",\"retain\":true,"
-    "\"stat_t\":\"%s\","
-    "\"val_tpl\":\"{%% if value_json.sOra is defined %%}{{ '%%02d:%%02d:00' | format(value_json.sOra | int(0), value_json.sMin | int(0)) }}{%% endif %%}\","
+    "{\"name\":\"Orario irrigazione ora\",\"uniq_id\":\"serra_orario_ora\","
+    "\"cmd_t\":\"%s/ORAH\",\"retain\":true,"
+    "\"stat_t\":\"%s\",\"val_tpl\":\"{{ value_json.sOra | default('') }}\","
+    "\"min\":0,\"max\":23,\"step\":1,\"mode\":\"box\","
+    "\"ic\":\"mdi:clock-outline\",\"avty_t\":\"%s\",%s}",
+    TOPIC_CMD_BASE, TOPIC_STATO, TOPIC_PONTE, DEV);
+  pubblica(topic, payload);
+
+  snprintf(topic, sizeof(topic), HA_DISCOVERY_PREFIX "/number/serra_orario_minuto/config");
+  snprintf(payload, sizeof(payload),
+    "{\"name\":\"Orario irrigazione minuto\",\"uniq_id\":\"serra_orario_minuto\","
+    "\"cmd_t\":\"%s/ORAM\",\"retain\":true,"
+    "\"stat_t\":\"%s\",\"val_tpl\":\"{{ value_json.sMin | default('') }}\","
+    "\"min\":0,\"max\":59,\"step\":5,\"mode\":\"box\","
     "\"ic\":\"mdi:clock-outline\",\"avty_t\":\"%s\",%s}",
     TOPIC_CMD_BASE, TOPIC_STATO, TOPIC_PONTE, DEV);
   pubblica(topic, payload);

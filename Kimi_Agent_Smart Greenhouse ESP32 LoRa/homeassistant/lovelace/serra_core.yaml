@@ -142,8 +142,10 @@ views:
             entities:
               - entity: switch.serra_irrigazione_automatica
                 name: Automatica
-              - entity: time.serra_orario_irrigazione
-                name: Orario
+              - entity: number.serra_orario_irrigazione_ora
+                name: Orario - ora
+              - entity: number.serra_orario_irrigazione_minuto
+                name: Orario - minuto
               - entity: number.serra_durata_irrigazione
                 name: Durata
               - entity: number.serra_soglia_umidita_terreno

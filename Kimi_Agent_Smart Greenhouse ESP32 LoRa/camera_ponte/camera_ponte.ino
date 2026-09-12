@@ -432,6 +432,16 @@ static void gestisciLoRa() {
   for (uint8_t i = 0; i < pkt.n(); i++)
     discoveryAssicuraSensore(pkt.campo(i).chiave);
 
+  /*
+   * rssi e snr vanno annunciati a parte, ed e' un errore che e' costato due
+   * entita' mai nate: non arrivano dal nodo, li aggiunge il ponte in fondo al
+   * JSON. Il ciclo qui sopra scorre i campi del PACCHETTO, dove quei due non
+   * compaiono, quindi la loro discovery non veniva pubblicata mai — pur
+   * essendo regolarmente presenti nella tabella e usati dalle dashboard.
+   */
+  discoveryAssicuraSensore("rssi");
+  discoveryAssicuraSensore("snr");
+
   // --- Esito di un comando eseguito dal nodo -------------------------------
   if (pkt.ha("res")) {
     const char* det = pkt.valore("det");

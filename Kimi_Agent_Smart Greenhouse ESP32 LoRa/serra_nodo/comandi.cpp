@@ -192,6 +192,29 @@ EsitoComando comandoEsegui(const ComandoRicevuto& cmd, const DateTime& adesso,
     return es;
   }
 
+  // --- ORAH,<0-23> e ORAM,<0-59> : ora e minuto separati -------------------
+  // Servono perche' l'entita' "time" di Home Assistant, che avrebbe permesso
+  // di impostare l'orario in un colpo solo, non viene creata su tutte le
+  // installazioni: verificato sul campo, una discovery "time" perfettamente
+  // valida veniva ignorata mentre un "sensor" identico funzionava. Con due
+  // number si ottiene lo stesso risultato con entita' che ci sono sempre.
+  if (strcmp(op, "ORAH") == 0 || strcmp(op, "ORAM") == 0) {
+    long v = argL(cmd.args, 0, -1);
+    bool ora = (op[3] == 'H');
+    if (v < 0 || v > (ora ? 23 : 59)) {
+      es.rc = RC_ARGOMENTI;
+      dettaglio(es, ora ? "ora_non_valida" : "minuto_non_valido");
+      return es;
+    }
+    if (ora) g_cfg.irrigOra    = (uint8_t)v;
+    else     g_cfg.irrigMinuto = (uint8_t)v;
+    impostazioniModificate();
+    impostazioniSalva();
+    snprintf(es.dettaglio, sizeof(es.dettaglio), "orario=%02u:%02u",
+             g_cfg.irrigOra, g_cfg.irrigMinuto);
+    return es;
+  }
+
   // --- SOIL,<soglia%> : -1 disattiva l'irrigazione condizionata ------------
   if (strcmp(op, "SOIL") == 0) {
     long s = argL(cmd.args, 0, -1);

@@ -21,12 +21,19 @@
 #  COME NASCONO GLI ENTITY ID
 #  --------------------------
 #  Home Assistant li ricava dal campo "name", NON da "unique_id": lo slug si
-#  ottiene mettendo tutto in minuscolo, togliendo la punteggiatura e
-#  sostituendo gli spazi con underscore. Un apostrofo produce quindi uno slug
-#  poco intuitivo ("dall'ultimo" diventa "dallultimo"), per cui qui i nomi
+#  ottiene mettendo tutto in minuscolo e sostituendo con underscore tutto
+#  cio' che non e' lettera o cifra — apostrofi compresi. Verificato sul campo:
+#  "Serra minuti dall'ultimo contatto" diventa
+#  sensor.serra_minuti_dall_ultimo_contatto, con l'apostrofo trasformato in
+#  underscore e non semplicemente tolto. Per non doverlo indovinare, i nomi
 #  delle entita' richiamate altrove nel file sono deliberatamente senza
 #  apostrofi. Se aggiungi entita' tue, ricordatelo o i riferimenti non
 #  troveranno nulla e i sensori resteranno "non disponibile" senza spiegazione.
+#
+#  utility_meter e' un caso a se': l'entity_id viene dal "name", ma
+#  l'unique_id dalla CHIAVE. Cambiare la chiave di un contatore gia' esistente
+#  crea un'entita' nuova che, trovando l'id occupato, finisce con "_2" in coda
+#  e perde tutto lo storico. Le chiavi qui sotto non vanno rinominate.
 #
 #  ATTENZIONE AGLI ENTITY ID
 #  -------------------------
@@ -44,12 +51,12 @@
 #  byte preziosi nel pacchetto LoRa.
 
 utility_meter:
-  acqua_serra_oggi:
+  acqua_serra_giornaliera:
     name: Acqua serra oggi
     source: sensor.serra_acqua_totale
     cycle: daily
 
-  acqua_serra_questo_mese:
+  acqua_serra_mensile:
     name: Acqua serra questo mese
     source: sensor.serra_acqua_totale
     cycle: monthly

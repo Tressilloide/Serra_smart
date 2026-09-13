@@ -62,8 +62,21 @@ EsitoIrrigazione irrigazioneValuta(const DateTime& adesso, bool rtcAttendibile, 
   uint32_t minutiSched = (uint32_t)g_cfg.irrigOra * 60UL + g_cfg.irrigMinuto;
   uint32_t finestraMin = (g_cfg.sleepSec / 60UL) + 1UL;
 
-  if (minutiOra < minutiSched || minutiOra >= minutiSched + finestraMin)
-    return IRR_NO_ORARIO;
+  if (finestraMin > 1440UL) finestraMin = 1440UL;   // una finestra non puo'
+                                                   // durare piu' di un giorno
+
+  /*
+   * Distanza in avanti dall'orario programmato, calcolata sul giro delle 24 h.
+   *
+   * Il confronto diretto "minutiOra >= minutiSched" sembra ovvio ma si rompe a
+   * mezzanotte: con la pianificazione alle 23:50 la finestra andrebbe da 1430
+   * a 1446, ma i minuti del giorno arrivano solo a 1439 e poi tornano a 0. Il
+   * risveglio delle 23:45 e' troppo presto, quello delle 00:00 ricomincia da
+   * zero, e la serra non verrebbe irrigata MAI senza dire perche'.
+   */
+  uint32_t daSched = (minutiOra + 1440UL - (minutiSched % 1440UL)) % 1440UL;
+
+  if (daSched >= finestraMin) return IRR_NO_ORARIO;
 
   if (g_cfg.irrigazioniOggi >= IRRIG_MAX_AL_GIORNO) return IRR_NO_GIA_FATTA;
 

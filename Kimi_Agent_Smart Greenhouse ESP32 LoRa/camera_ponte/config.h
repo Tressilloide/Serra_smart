@@ -59,6 +59,15 @@
 // ======================= TIMING =============================================
 
 #define WIFI_RETRY_MS        10000UL    // Intervallo tra i tentativi WiFi
+
+// Stampa all'avvio l'elenco delle reti visibili con il loro segnale, misurato
+// dalla posizione del ponte. Costa un paio di secondi al boot e serve a
+// scegliere l'access point sui numeri, non a intuito. Mettilo a 0 quando la
+// configurazione e' stabile.
+#define SCANSIONE_WIFI_AVVIO 1
+
+// Sotto questo valore il collegamento e' fragile e va segnalato all'avvio.
+#define WIFI_RSSI_DEBOLE     -78
 #define MQTT_RETRY_MS        5000UL     // Intervallo tra i tentativi MQTT
 #define DIAG_INTERVALLO_MS   60000UL    // Pubblicazione diagnostica
 

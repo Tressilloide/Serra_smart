@@ -101,8 +101,48 @@ static void wdtImposta(uint32_t secondi) {
 
 // ============================ WIFI ==========================================
 
+/*
+ * Scansione delle reti visibili, stampata all'avvio.
+ *
+ * Serve a scegliere l'access point guardando i numeri invece che a intuito:
+ * il segnale va misurato DALLA POSIZIONE DEL PONTE, non da dove sei tu col
+ * telefono. Mostra anche se la rete configurata e' effettivamente visibile,
+ * il che smaschera subito i due errori piu' comuni: SSID scritto male e rete
+ * a 5 GHz, che l'ESP32 non puo' vedere perche' ha solo la radio a 2,4 GHz.
+ */
+#if SCANSIONE_WIFI_AVVIO
+static void wifiScansione() {
+  Serial.println(F("[WiFi] Scansione delle reti visibili da qui..."));
+  int n = WiFi.scanNetworks();
+
+  if (n <= 0) {
+    Serial.println(F("[WiFi] Nessuna rete trovata."));
+    return;
+  }
+
+  bool trovataLaNostra = false;
+  Serial.println(F("       RSSI  canale  SSID"));
+  for (int i = 0; i < n && i < 12; i++) {
+    bool nostra = (WiFi.SSID(i) == WIFI_SSID);
+    if (nostra) trovataLaNostra = true;
+    Serial.printf("      %4d  %6d  %s%s\n", WiFi.RSSI(i), WiFi.channel(i),
+                  WiFi.SSID(i).c_str(), nostra ? "   <== configurata" : "");
+  }
+
+  if (!trovataLaNostra) {
+    Serial.printf("[WiFi] ATTENZIONE: \"%s\" non e' fra le reti visibili.\n", WIFI_SSID);
+    Serial.println(F("[WiFi] Controlla il nome (occhio a maiuscole e spazi) e"));
+    Serial.println(F("[WiFi] ricorda che l'ESP32 vede SOLO i 2,4 GHz, mai i 5 GHz."));
+  }
+  WiFi.scanDelete();
+}
+#endif
+
 static void wifiSetup() {
   WiFi.mode(WIFI_STA);
+#if SCANSIONE_WIFI_AVVIO
+  wifiScansione();
+#endif
   WiFi.setAutoReconnect(true);
   WiFi.persistent(true);
   /*
@@ -134,10 +174,18 @@ static void wifiMantieni() {
       if (primoAggancio) primoAggancio = false;
       else               riconnessioniWifi++;
 
-      Serial.printf("[WiFi] Riconnesso dopo %lu s: %s (RSSI %d dBm) - riconnessione n.%lu\n",
+      int rssi = WiFi.RSSI();
+      Serial.printf("[WiFi] Connesso dopo %lu s: %s (RSSI %d dBm) - riconnessioni: %lu\n",
                     (unsigned long)((millis() - wifiGiuDa) / 1000UL),
-                    WiFi.localIP().toString().c_str(), WiFi.RSSI(),
+                    WiFi.localIP().toString().c_str(), rssi,
                     (unsigned long)riconnessioniWifi);
+
+      // Segnalato all'avvio invece di lasciarlo scoprire dai sintomi: sotto
+      // questa soglia le cadute di connessione sono attese, non un guasto.
+      if (rssi < WIFI_RSSI_DEBOLE)
+        Serial.printf("[WiFi] ATTENZIONE: %d dBm e' un segnale debole. Aspettati "
+                      "riconnessioni: avvicina il ponte o cambia access point.\n", rssi);
+
       wifiGiuDa = 0;
     }
     return;

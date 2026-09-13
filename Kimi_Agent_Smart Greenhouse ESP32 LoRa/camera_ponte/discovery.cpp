@@ -400,6 +400,11 @@ static const DiagPonte DIAG[] = {
   { "ponte_uptime", "Ponte uptime",        "uptime",         "s",   "duration",        "mdi:timer-outline"   },
   { "ponte_wifi",   "Ponte segnale WiFi",  "wifi_rssi",      "dBm", "signal_strength", nullptr               },
   { "ponte_pkt",    "Pacchetti ricevuti",  "pkt",            nullptr, nullptr,         "mdi:package-down"    },
+  // Il ponte conta un pacchetto appena lo riceve dalla radio, PRIMA di
+  // controllare che sia leggibile. Con un collegamento al limite capita che
+  // arrivi qualcosa di corrotto: senza questo contatore, "pacchetti ricevuti"
+  // che sale senza che i sensori si aggiornino resta inspiegabile.
+  { "ponte_ko",     "Pacchetti scartati",  "scartati",       nullptr, nullptr,         "mdi:package-variant-remove" },
   { "ponte_heap",   "Ponte memoria libera","heap",           "B",   "data_size",       "mdi:memory"          },
   { "ponte_cmd",    "Comandi consegnati",  "cmd_consegnati", nullptr, nullptr,         "mdi:send-check"      },
   // Questi due sono la spia dei "non disponibile" lampeggianti in Home

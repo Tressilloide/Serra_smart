@@ -63,6 +63,18 @@
 #define IRRIG_MAX_AL_GIORNO    4     // Numero massimo di irrigazioni giornaliere
 #define BUDGET_LITRI_GIORNO    50.0f // Litri massimi al giorno (0 = disattivato).
                                      // Attivo solo se il flussometro e' presente.
+//
+// ATTENZIONE: questo tetto vale quanto vale la taratura del flussometro, ed e'
+// il meno affidabile dei quattro. La taratura attuale (433 impulsi/L) e' stata
+// fatta al banco versando un litro con l'imbuto, mentre in esercizio la
+// valvola alimenta un impianto a goccia, la cui portata puo' stare sotto il
+// minimo di specifica del YF-S201 (1 L/min): li' la turbina conta in modo
+// irregolare o non conta affatto.
+//
+// Se il sensore sotto-conta, questo tetto non scatta mai. NON considerarlo
+// la rete di sicurezza principale: quelle vere sono le tre qui sopra, che si
+// basano sul TEMPO e non dipendono da nessuna misura -- durata massima,
+// numero massimo giornaliero e intervallo minimo.
 
 // ======================= SENSORI — FEATURE FLAG =============================
 // Metti a 0 quello che non hai ancora collegato: il codice si adatta da solo,

@@ -66,6 +66,7 @@ PubSubClient mqtt(espClient);
 static uint32_t ultimoTentativoWifi = 0;
 static uint32_t ultimoTentativoMqtt = 0;
 static uint32_t ultimaDiagnostica   = 0;
+static uint32_t ultimaDiscovery     = 0;   // 0 = mai pubblicata
 static uint32_t wifiGiuDa           = 0;
 
 static uint32_t riconnessioniWifi   = 0;
@@ -209,11 +210,35 @@ static void mqttMantieni() {
     // i comandi di azione che arrivano adesso sono residui, non richieste.
     codaSegnalaSottoscrizione();
 
-    // Ripubblicazione completa: cosi' le entita' si ricreano anche se il
-    // broker ha perso i retained (per esempio dopo un suo riavvio).
-    discoveryReset();
-    discoveryPubblicaComandi();
-    discoveryPubblicaPonte();
+    /*
+     * La discovery NON si ripubblica a ogni riconnessione.
+     *
+     * Sono tredici messaggi ritenuti da ~400 byte: una raffica di 5 KB spinta
+     * nel socket alla massima velocita'. Su un WiFi debole basta a far cadere
+     * la connessione appena stabilita, il che provoca una riconnessione, che
+     * rilancia la raffica. Nel log del ponte si vedeva nitidamente:
+     * connessione riuscita, tredici pubblicazioni, caduta dopo cinque secondi,
+     * e tutto da capo.
+     *
+     * Ripubblicare ogni volta era comunque inutile: quei messaggi sono
+     * RITENUTI, quindi e' il broker a conservarli. Serve farlo al primo avvio
+     * e, per sicurezza, ogni tanto, nel caso il broker sia stato reinstallato.
+     */
+    uint32_t adessoMs = millis();
+    bool servePubblicare = (ultimaDiscovery == 0) ||
+                           (adessoMs - ultimaDiscovery > DISCOVERY_RIPUBBLICA_MS);
+
+    if (servePubblicare) {
+      discoveryReset();
+      if (discoveryPubblicaComandi() && discoveryPubblicaPonte())
+        ultimaDiscovery = adessoMs ? adessoMs : 1;   // 0 e' riservato a "mai"
+      else
+        Serial.println(F("[HA] Discovery interrotta: riprovo alla prossima connessione."));
+    } else {
+      Serial.printf("[HA] Discovery gia' pubblicata %lu min fa: la salto.\n",
+                    (unsigned long)((adessoMs - ultimaDiscovery) / 60000UL));
+    }
+
     codaPubblicaPending();
   } else {
     Serial.printf("fallita (rc=%d), riprovo tra %lu s.\n",

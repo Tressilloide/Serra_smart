@@ -40,12 +40,14 @@ void discoveryInit(PubSubClient* client);
 void discoveryReset();
 
 // Pubblica le entita' di comando (button / number / switch / time).
-void discoveryPubblicaComandi();
+// Ritornano false se una pubblicazione fallisce: su un collegamento debole
+// insistere a spingere byte in un socket che non regge peggiora le cose.
+bool discoveryPubblicaComandi();
 
 // Pubblica le entita' diagnostiche del PONTE (uptime, RSSI WiFi, pacchetti,
 // heap). Sono in categoria "diagnostic", quindi Home Assistant le raggruppa
 // da sola in fondo alla scheda del dispositivo senza intasare la dashboard.
-void discoveryPubblicaPonte();
+bool discoveryPubblicaPonte();
 
 /*
  * Assicura che esista una entita' Home Assistant per questa chiave.

@@ -61,6 +61,13 @@
 #define WIFI_RETRY_MS        10000UL    // Intervallo tra i tentativi WiFi
 #define MQTT_RETRY_MS        5000UL     // Intervallo tra i tentativi MQTT
 #define DIAG_INTERVALLO_MS   60000UL    // Pubblicazione diagnostica
+
+// Ogni quanto RIPUBBLICARE la discovery di Home Assistant. I messaggi sono
+// ritenuti, quindi li conserva il broker: ripubblicarli a ogni riconnessione
+// significava solo riversare 5 KB nel socket ogni volta, cosa che su un WiFi
+// debole faceva cadere la connessione appena stabilita. Serve al primo avvio
+// e ogni tanto, nel caso il broker venga reinstallato e perda tutto.
+#define DISCOVERY_RIPUBBLICA_MS  21600000UL   // 6 ore
 #define WDT_LOOP_SEC         30         // Watchdog del loop principale
 
 /*

@@ -215,14 +215,31 @@ void discoveryAssicuraSensore(const char* chiave) {
  * consegna al nodo. La coda sopravvive a un riavvio del ponte senza bisogno
  * di scriverla da nessuna parte.
  */
-static void pubblica(const char* topic, const char* payload) {
-  if (!mqtt || !mqtt->connected()) return;
-  if (!mqtt->publish(topic, (const uint8_t*)payload, strlen(payload), true))
-    Serial.printf("[HA] ERRORE pubblicando %s\n", topic);
+static bool pubblica(const char* topic, const char* payload) {
+  if (!mqtt || !mqtt->connected()) return false;
+
+  if (!mqtt->publish(topic, (const uint8_t*)payload, strlen(payload), true)) {
+    Serial.printf("[HA] ERRORE pubblicando %s: interrompo la sequenza.\n", topic);
+    return false;
+  }
+
+  /*
+   * Respiro fra un messaggio e il successivo.
+   *
+   * Le entita' di comando sono tredici messaggi ritenuti da ~400 byte: spinti
+   * tutti insieme fanno circa 5 KB riversati nel socket alla massima velocita'.
+   * Con un WiFi debole quella raffica basta a far cadere la connessione appena
+   * stabilita, il che provoca una riconnessione, che rilancia la raffica: un
+   * ciclo che si autoalimenta, osservato davvero nel log del ponte.
+   * mqtt->loop() da' modo allo stack di svuotare il buffer di trasmissione.
+   */
+  mqtt->loop();
+  delay(30);
+  return true;
 }
 
-void discoveryPubblicaComandi() {
-  if (!mqtt || !mqtt->connected()) return;
+bool discoveryPubblicaComandi() {
+  if (!mqtt || !mqtt->connected()) return false;
   Serial.println(F("[HA] Pubblico le entita' di comando..."));
 
   char topic[96];
@@ -235,7 +252,7 @@ void discoveryPubblicaComandi() {
     "\"cmd_t\":\"%s/IRR\",\"payload_press\":\"0\",\"retain\":true,"
     "\"ic\":\"mdi:sprinkler\",\"avty_t\":\"%s\",%s}",
     TOPIC_CMD_BASE, TOPIC_PONTE, DEV);
-  pubblica(topic, payload);
+  if (!pubblica(topic, payload)) return false;
 
   // --- Bottone: blocca l'irrigazione per oggi ------------------------------
   snprintf(topic, sizeof(topic), HA_DISCOVERY_PREFIX "/button/serra_stop/config");
@@ -244,7 +261,7 @@ void discoveryPubblicaComandi() {
     "\"cmd_t\":\"%s/STOP\",\"payload_press\":\"1\",\"retain\":true,"
     "\"ic\":\"mdi:water-off\",\"avty_t\":\"%s\",%s}",
     TOPIC_CMD_BASE, TOPIC_PONTE, DEV);
-  pubblica(topic, payload);
+  if (!pubblica(topic, payload)) return false;
 
   // --- Numero: durata irrigazione ------------------------------------------
   // Il massimo coincide con il tetto compilato nel nodo (IRRIG_MAX_SEC):
@@ -257,7 +274,7 @@ void discoveryPubblicaComandi() {
     "\"min\":10,\"max\":900,\"step\":10,\"unit_of_meas\":\"s\",\"mode\":\"box\","
     "\"ic\":\"mdi:timer-sand\",\"avty_t\":\"%s\",%s}",
     TOPIC_CMD_BASE, TOPIC_STATO, TOPIC_PONTE, DEV);
-  pubblica(topic, payload);
+  if (!pubblica(topic, payload)) return false;
 
   /*
    * Orario programmato: DUE number, ora e minuto, invece di una sola entita'
@@ -278,7 +295,7 @@ void discoveryPubblicaComandi() {
     "\"min\":0,\"max\":23,\"step\":1,\"mode\":\"box\","
     "\"ic\":\"mdi:clock-outline\",\"avty_t\":\"%s\",%s}",
     TOPIC_CMD_BASE, TOPIC_STATO, TOPIC_PONTE, DEV);
-  pubblica(topic, payload);
+  if (!pubblica(topic, payload)) return false;
 
   snprintf(topic, sizeof(topic), HA_DISCOVERY_PREFIX "/number/serra_orario_minuto/config");
   snprintf(payload, sizeof(payload),
@@ -288,7 +305,7 @@ void discoveryPubblicaComandi() {
     "\"min\":0,\"max\":59,\"step\":5,\"mode\":\"box\","
     "\"ic\":\"mdi:clock-outline\",\"avty_t\":\"%s\",%s}",
     TOPIC_CMD_BASE, TOPIC_STATO, TOPIC_PONTE, DEV);
-  pubblica(topic, payload);
+  if (!pubblica(topic, payload)) return false;
 
   // --- Interruttore: irrigazione automatica --------------------------------
   snprintf(topic, sizeof(topic), HA_DISCOVERY_PREFIX "/switch/serra_auto/config");
@@ -299,7 +316,7 @@ void discoveryPubblicaComandi() {
     "\"pl_on\":\"1\",\"pl_off\":\"0\",\"stat_on\":\"1\",\"stat_off\":\"0\","
     "\"ic\":\"mdi:calendar-clock\",\"avty_t\":\"%s\",%s}",
     TOPIC_CMD_BASE, TOPIC_STATO, TOPIC_PONTE, DEV);
-  pubblica(topic, payload);
+  if (!pubblica(topic, payload)) return false;
 
   // --- Numero: soglia umidita' terreno (-1 = irrigazione non condizionata) --
   snprintf(topic, sizeof(topic), HA_DISCOVERY_PREFIX "/number/serra_soglia/config");
@@ -310,7 +327,7 @@ void discoveryPubblicaComandi() {
     "\"min\":-1,\"max\":100,\"step\":1,\"unit_of_meas\":\"%%\",\"mode\":\"slider\","
     "\"ic\":\"mdi:water-alert\",\"avty_t\":\"%s\",%s}",
     TOPIC_CMD_BASE, TOPIC_STATO, TOPIC_PONTE, DEV);
-  pubblica(topic, payload);
+  if (!pubblica(topic, payload)) return false;
 
   // --- Numero: intervallo di risveglio -------------------------------------
   snprintf(topic, sizeof(topic), HA_DISCOVERY_PREFIX "/number/serra_sleep/config");
@@ -321,7 +338,7 @@ void discoveryPubblicaComandi() {
     "\"min\":60,\"max\":3600,\"step\":60,\"unit_of_meas\":\"s\",\"mode\":\"box\","
     "\"ic\":\"mdi:sleep\",\"ent_cat\":\"config\",\"avty_t\":\"%s\",%s}",
     TOPIC_CMD_BASE, TOPIC_STATO, TOPIC_PONTE, DEV);
-  pubblica(topic, payload);
+  if (!pubblica(topic, payload)) return false;
 
   // --- Bottone: finestra di manutenzione -----------------------------------
   snprintf(topic, sizeof(topic), HA_DISCOVERY_PREFIX "/button/serra_wake/config");
@@ -330,7 +347,7 @@ void discoveryPubblicaComandi() {
     "\"cmd_t\":\"%s/WAKE\",\"payload_press\":\"120\",\"retain\":true,"
     "\"ic\":\"mdi:tools\",\"ent_cat\":\"config\",\"avty_t\":\"%s\",%s}",
     TOPIC_CMD_BASE, TOPIC_PONTE, DEV);
-  pubblica(topic, payload);
+  if (!pubblica(topic, payload)) return false;
 
   // --- Bottone: svuota backlog ---------------------------------------------
   snprintf(topic, sizeof(topic), HA_DISCOVERY_PREFIX "/button/serra_clrbl/config");
@@ -339,7 +356,7 @@ void discoveryPubblicaComandi() {
     "\"cmd_t\":\"%s/CLRBL\",\"payload_press\":\"1\",\"retain\":true,"
     "\"ic\":\"mdi:database-remove\",\"ent_cat\":\"config\",\"avty_t\":\"%s\",%s}",
     TOPIC_CMD_BASE, TOPIC_PONTE, DEV);
-  pubblica(topic, payload);
+  if (!pubblica(topic, payload)) return false;
 
   // --- Bottone: riavvia il nodo --------------------------------------------
   snprintf(topic, sizeof(topic), HA_DISCOVERY_PREFIX "/button/serra_reset/config");
@@ -348,7 +365,7 @@ void discoveryPubblicaComandi() {
     "\"cmd_t\":\"%s/RESET\",\"payload_press\":\"1\",\"retain\":true,"
     "\"dev_cla\":\"restart\",\"ent_cat\":\"config\",\"avty_t\":\"%s\",%s}",
     TOPIC_CMD_BASE, TOPIC_PONTE, DEV);
-  pubblica(topic, payload);
+  if (!pubblica(topic, payload)) return false;
 
   // --- Sensore: comandi in attesa di consegna ------------------------------
   // Serve alla dashboard per dire "comando in coda, verra' eseguito al
@@ -360,9 +377,10 @@ void discoveryPubblicaComandi() {
     "\"json_attr_t\":\"%s\","
     "\"ic\":\"mdi:playlist-play\",\"avty_t\":\"%s\",%s}",
     TOPIC_CMD_PEND, TOPIC_CMD_PEND, TOPIC_PONTE, DEV);
-  pubblica(topic, payload);
+  if (!pubblica(topic, payload)) return false;
 
   Serial.println(F("[HA] Entita' di comando pubblicate."));
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -397,8 +415,8 @@ static const DiagPonte DIAG[] = {
   { "ponte_rmqtt",  "Riconnessioni MQTT",  "riconn_mqtt",    nullptr, nullptr,         "mdi:lan-disconnect"  },
 };
 
-void discoveryPubblicaPonte() {
-  if (!mqtt || !mqtt->connected()) return;
+bool discoveryPubblicaPonte() {
+  if (!mqtt || !mqtt->connected()) return false;
 
   char topic[96];
   char payload[700];
@@ -417,8 +435,9 @@ void discoveryPubblicaPonte() {
       d.devClass ? "\"dev_cla\":\""      : "", d.devClass ? d.devClass : "", d.devClass ? "\"," : "",
       d.icona    ? "\"ic\":\""           : "", d.icona    ? d.icona    : "", d.icona    ? "\"," : "",
       TOPIC_PONTE, DEV);
-    pubblica(topic, payload);
+    if (!pubblica(topic, payload)) return false;
   }
 
   Serial.println(F("[HA] Entita' diagnostiche del ponte pubblicate."));
+  return true;
 }

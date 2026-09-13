@@ -41,6 +41,13 @@ struct Impostazioni {
 
   // --- Contatori cumulativi (mai azzerati) ---
   float    litriTotali;       // alimenta la statistica "total_increasing" in HA
+  /*
+   * Litri dell'ULTIMA irrigazione. Sta in NVS e non fra le variabili normali
+   * perche' ogni risveglio da deep sleep e' un avvio da zero: una variabile
+   * static tornerebbe a 0, e il primo pacchetto regolare dopo l'irrigazione
+   * sovrascriverebbe in Home Assistant il valore buono con uno zero.
+   */
+  float    litriUltima;
   uint32_t backlogScartati;   // record persi per superamento di BACKLOG_MAX_BYTE
 
   // --- Calibrazioni (comando CAL) ---

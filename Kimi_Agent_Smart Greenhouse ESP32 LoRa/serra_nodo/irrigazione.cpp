@@ -6,11 +6,12 @@
 
 #include <driver/gpio.h>
 
-static float    g_litriUltima  = 0.0f;
 static uint32_t g_durataUltima = 0;
 static bool     g_eseguitaOra  = false;
 
-float    irrigazioneLitriUltima()  { return g_litriUltima; }
+// I litri dell'ultima irrigazione vivono in NVS (g_cfg), non qui: vedi il
+// commento sul campo in impostazioni.h. Il deep sleep azzererebbe una static.
+float    irrigazioneLitriUltima()  { return g_cfg.litriUltima; }
 uint32_t irrigazioneDurataUltima() { return g_durataUltima; }
 bool     irrigazioneEseguitaOra()  { return g_eseguitaOra; }
 
@@ -264,8 +265,9 @@ EsitoIrrigazione irrigazioneEsegui(uint32_t durataSec, float litriTarget, uint32
 
     flussoStacca();
   }
-  g_litriUltima = litri;
-  g_eseguitaOra = true;
+  g_cfg.litriUltima = litri;
+  g_eseguitaOra     = true;
+  impostazioniModificate();   // va salvato anche se sono zero litri
 
   // Il terreno e' appena cambiato: la lettura memorizzata non vale piu' e la
   // composizione del pacchetto ne fara' una nuova. E' l'unico caso in cui la

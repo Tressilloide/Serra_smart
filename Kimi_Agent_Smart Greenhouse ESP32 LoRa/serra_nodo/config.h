@@ -18,7 +18,7 @@
 // ======================= IDENTITA' DEL NODO =================================
 
 #define NODE_ID          "GH1"    // Identificativo di questo nodo (max 8 char)
-#define FW_VERSION       "2.0.0"  // Riportata in Home Assistant
+#define FW_VERSION       "2.1.0"  // Riportata in Home Assistant
 
 // ======================= RADIO LoRa =========================================
 // Questi parametri DEVONO essere identici sul ponte in camera.

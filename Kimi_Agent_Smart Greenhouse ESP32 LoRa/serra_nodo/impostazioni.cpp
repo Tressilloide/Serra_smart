@@ -25,6 +25,7 @@ static void applicaDefault() {
   g_cfg.ultimaIrrigEpoch = 0;
 
   g_cfg.litriTotali     = 0.0f;
+  g_cfg.litriUltima     = 0.0f;
   g_cfg.backlogScartati = 0;
 
   g_cfg.voltDivider    = VOLT_DIVIDER_DEF;
@@ -89,6 +90,7 @@ static void validaImpostazioni() {
   if (g_cfg.irrigazioniOggi > IRRIG_MAX_AL_GIORNO) g_cfg.irrigazioniOggi = IRRIG_MAX_AL_GIORNO;
   if (isnan(g_cfg.litriOggi)   || g_cfg.litriOggi   < 0.0f) g_cfg.litriOggi   = 0.0f;
   if (isnan(g_cfg.litriTotali) || g_cfg.litriTotali < 0.0f) g_cfg.litriTotali = 0.0f;
+  if (isnan(g_cfg.litriUltima) || g_cfg.litriUltima < 0.0f) g_cfg.litriUltima = 0.0f;
 
   for (uint8_t i = 0; i < 4; i++)
     if (g_cfg.soilSecco[i] == g_cfg.soilBagnato[i]) {   // taratura impossibile
@@ -121,6 +123,7 @@ void impostazioniCarica() {
   g_cfg.ultimaIrrigEpoch = prefs.getULong("ultIrr",  g_cfg.ultimaIrrigEpoch);
 
   g_cfg.litriTotali     = prefs.getFloat("litTot",   g_cfg.litriTotali);
+  g_cfg.litriUltima     = prefs.getFloat("litUlt",   g_cfg.litriUltima);
   g_cfg.backlogScartati = prefs.getULong("blScart",  g_cfg.backlogScartati);
 
   g_cfg.voltDivider    = prefs.getFloat("voltDiv",   g_cfg.voltDivider);
@@ -163,6 +166,7 @@ void impostazioniSalva() {
   prefs.putULong("ultIrr",  g_cfg.ultimaIrrigEpoch);
 
   prefs.putFloat("litTot",  g_cfg.litriTotali);
+  prefs.putFloat("litUlt",  g_cfg.litriUltima);
   prefs.putULong("blScart", g_cfg.backlogScartati);
 
   prefs.putFloat("voltDiv", g_cfg.voltDivider);

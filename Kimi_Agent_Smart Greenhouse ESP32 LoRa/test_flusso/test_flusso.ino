@@ -186,7 +186,7 @@ void setup() {
 
 static void eseguiCiclo(uint8_t n) {
   Serial.println();
-  Serial.printf("--- CICLO %u di %d — apro la valvola per %d s ---\n",
+  Serial.printf("--- CICLO %u di %d - apro la valvola per %d s ---\n",
                 n + 1, CICLI, SECONDI_ON);
 
   uint32_t impulsiInizio = impulsi();

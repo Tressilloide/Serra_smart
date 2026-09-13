@@ -10,7 +10,7 @@
 
 #pragma once
 
-#define FW_VERSION_PONTE "2.0.0"
+#define FW_VERSION_PONTE "2.1.0"
 
 // ======================= RADIO LoRa =========================================
 // DEVONO coincidere esattamente con serra_nodo/config.h, altrimenti i due

@@ -297,7 +297,7 @@ void setup() {
 
   Serial.println();
   Serial.println(F("============================================================"));
-  Serial.println(F("  SERRA SMART — AUTOTEST DEL PROTOCOLLO"));
+  Serial.println(F("  SERRA SMART - AUTOTEST DEL PROTOCOLLO"));
   Serial.printf ("  versione %d, tetto %d byte, max %d campi\n",
                  PROTO_VERSIONE, PROTO_MAX_PAYLOAD, PROTO_MAX_CAMPI);
   Serial.println(F("============================================================"));

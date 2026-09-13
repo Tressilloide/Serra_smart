@@ -303,7 +303,7 @@ void setup() {
 
   Serial.println();
   Serial.println(F("============================================================"));
-  Serial.printf ("  NODO SERRA %s — firmware %s\n", NODE_ID, FW_VERSION);
+  Serial.printf ("  NODO SERRA %s - firmware %s\n", NODE_ID, FW_VERSION);
   Serial.printf ("  Reset: %s | risveglio #%lu | seq %lu\n",
                  wdtMotivoReset(motivo), (unsigned long)g_risvegli, (unsigned long)g_seq);
   Serial.println(F("============================================================"));

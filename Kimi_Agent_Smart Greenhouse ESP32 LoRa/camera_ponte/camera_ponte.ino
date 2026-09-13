@@ -91,12 +91,20 @@ static void wdtImposta(uint32_t secondi) {
   cfg.timeout_ms     = secondi * 1000UL;
   cfg.idle_core_mask = 0;
   cfg.trigger_panic  = true;
-  esp_err_t e = esp_task_wdt_init(&cfg);
-  if (e == ESP_ERR_INVALID_STATE) esp_task_wdt_reconfigure(&cfg);
+  // Si prova PRIMA a riconfigurare e solo dopo a inizializzare.
+  // Nel core ESP32 3.x il TWDT e' gia' avviato dal framework, quindi init()
+  // per primo fallisce sempre e stampa un "E (...) task_wdt: TWDT already
+  // initialized" rosso nel log di avvio: sembra un guasto grave e invece e'
+  // rumore. Correzione gia' applicata al nodo in watchdog.h; qui il ponte
+  // aveva la sua copia locale ed era rimasta indietro.
+  esp_err_t e = esp_task_wdt_reconfigure(&cfg);
+  if (e == ESP_ERR_INVALID_STATE) e = esp_task_wdt_init(&cfg);
+  if (e != ESP_OK) Serial.printf("[WDT] Configurazione fallita (err=%d)\n", (int)e);
 #else
   esp_task_wdt_init(secondi, true);
 #endif
-  esp_task_wdt_add(NULL);
+  // Anche qui: iscrivere un task gia' iscritto stampa un altro errore rosso.
+  if (esp_task_wdt_status(NULL) != ESP_OK) esp_task_wdt_add(NULL);
 }
 
 // ============================ WIFI ==========================================
@@ -595,7 +603,7 @@ void setup() {
   delay(100);
   Serial.println();
   Serial.println(F("============================================================"));
-  Serial.printf ("  PONTE LoRa <-> MQTT — firmware %s\n", FW_VERSION_PONTE);
+  Serial.printf ("  PONTE LoRa <-> MQTT - firmware %s\n", FW_VERSION_PONTE);
   Serial.println(F("============================================================"));
 
   // --- LoRa: gli stessi identici parametri radio del nodo serra ------------

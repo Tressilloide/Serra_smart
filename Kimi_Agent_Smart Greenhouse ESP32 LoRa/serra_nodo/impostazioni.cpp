@@ -1,4 +1,5 @@
 #include "impostazioni.h"
+#include "irrigazione.h"   // per EsitoIrrigazione, che finisce in esitoUltima
 #include <Preferences.h>
 
 Impostazioni g_cfg;
@@ -19,14 +20,17 @@ static void applicaDefault() {
   g_cfg.irrigAuto       = IRRIG_AUTO_DEF;
   g_cfg.soilSoglia      = SOIL_SOGLIA_DEF;
 
-  g_cfg.giornoCorrente   = 0;
-  g_cfg.irrigazioniOggi  = 0;
-  g_cfg.litriOggi        = 0.0f;
-  g_cfg.ultimaIrrigEpoch = 0;
+  g_cfg.giornoCorrente    = 0;
+  g_cfg.irrigazioniOggi   = 0;
+  g_cfg.litriOggi         = 0.0f;
+  g_cfg.ultimaIrrigEpoch  = 0;
+  g_cfg.giornoProgrammata = 0;
 
   g_cfg.litriTotali     = 0.0f;
   g_cfg.litriUltima     = 0.0f;
   g_cfg.backlogScartati = 0;
+  g_cfg.esitoUltima     = IRR_NO_ORARIO;
+  g_cfg.irrigInCorso    = 0;
 
   g_cfg.voltDivider    = VOLT_DIVIDER_DEF;
   g_cfg.flussoImpLitro = FLUSSO_IMP_LITRO_DEF;
@@ -37,6 +41,12 @@ static void applicaDefault() {
 
   g_cfg.sleepSec         = SLEEP_TIME_SEC;
   g_cfg.sensoriAbilitati = 0xFFFFFFFF;   // tutti attivi salvo diverso ordine
+
+  // Zero = UTC, ed e' il valore giusto per un nodo che non ha ancora sentito
+  // il ponte: fino ad allora l'orario programmato non e' interpretabile. Dura
+  // un solo risveglio, perche' l'ACK che porta l'ora porta anche il fuso.
+  g_cfg.tzOffsetSec      = 0;
+  g_cfg.tzNoto           = 0;
 }
 
 /*
@@ -88,6 +98,17 @@ static void validaImpostazioni() {
 
   // Contatori: un valore assurdo bloccherebbe l'irrigazione per sempre
   if (g_cfg.irrigazioniOggi > IRRIG_MAX_AL_GIORNO) g_cfg.irrigazioniOggi = IRRIG_MAX_AL_GIORNO;
+
+  // Uno scarto di fuso assurdo sposterebbe l'orario programmato di ore senza
+  // dire niente a nessuno. I fusi reali stanno fra UTC-12 e UTC+14.
+  if (g_cfg.tzOffsetSec < -43200L || g_cfg.tzOffsetSec > 50400L) {
+    Serial.printf("[CFG] ATTENZIONE: tzOffsetSec (%ld s) fuori range, torno a UTC.\n",
+                  (long)g_cfg.tzOffsetSec);
+    g_cfg.tzOffsetSec = 0;
+  }
+  if (g_cfg.esitoUltima > IRR_INTERROTTA) g_cfg.esitoUltima  = IRR_NO_ORARIO;
+  if (g_cfg.irrigInCorso > 1)             g_cfg.irrigInCorso = 1;
+  if (g_cfg.tzNoto > 1)                   g_cfg.tzNoto       = 1;
   if (isnan(g_cfg.litriOggi)   || g_cfg.litriOggi   < 0.0f) g_cfg.litriOggi   = 0.0f;
   if (isnan(g_cfg.litriTotali) || g_cfg.litriTotali < 0.0f) g_cfg.litriTotali = 0.0f;
   if (isnan(g_cfg.litriUltima) || g_cfg.litriUltima < 0.0f) g_cfg.litriUltima = 0.0f;
@@ -117,14 +138,17 @@ void impostazioniCarica() {
   g_cfg.irrigAuto      = prefs.getBool  ("irrAuto",  g_cfg.irrigAuto);
   g_cfg.soilSoglia     = prefs.getShort ("soilSg",   g_cfg.soilSoglia);
 
-  g_cfg.giornoCorrente   = prefs.getULong("giorno",  g_cfg.giornoCorrente);
-  g_cfg.irrigazioniOggi  = prefs.getUChar("irrOggi", g_cfg.irrigazioniOggi);
-  g_cfg.litriOggi        = prefs.getFloat("litOggi", g_cfg.litriOggi);
-  g_cfg.ultimaIrrigEpoch = prefs.getULong("ultIrr",  g_cfg.ultimaIrrigEpoch);
+  g_cfg.giornoCorrente    = prefs.getULong("giorno",   g_cfg.giornoCorrente);
+  g_cfg.irrigazioniOggi   = prefs.getUChar("irrOggi",  g_cfg.irrigazioniOggi);
+  g_cfg.litriOggi         = prefs.getFloat("litOggi",  g_cfg.litriOggi);
+  g_cfg.ultimaIrrigEpoch  = prefs.getULong("ultIrr",   g_cfg.ultimaIrrigEpoch);
+  g_cfg.giornoProgrammata = prefs.getULong("giornoPr", g_cfg.giornoProgrammata);
 
   g_cfg.litriTotali     = prefs.getFloat("litTot",   g_cfg.litriTotali);
   g_cfg.litriUltima     = prefs.getFloat("litUlt",   g_cfg.litriUltima);
   g_cfg.backlogScartati = prefs.getULong("blScart",  g_cfg.backlogScartati);
+  g_cfg.esitoUltima     = prefs.getUChar("esitoUlt", g_cfg.esitoUltima);
+  g_cfg.irrigInCorso    = prefs.getUChar("irrCorso", g_cfg.irrigInCorso);
 
   g_cfg.voltDivider    = prefs.getFloat("voltDiv",   g_cfg.voltDivider);
   g_cfg.flussoImpLitro = prefs.getFloat("flImpL",    g_cfg.flussoImpLitro);
@@ -139,6 +163,8 @@ void impostazioniCarica() {
 
   g_cfg.sleepSec         = prefs.getULong("sleepS",  g_cfg.sleepSec);
   g_cfg.sensoriAbilitati = prefs.getULong("sensEn",  g_cfg.sensoriAbilitati);
+  g_cfg.tzOffsetSec      = (int32_t)prefs.getLong("tzOff", (long)g_cfg.tzOffsetSec);
+  g_cfg.tzNoto           = prefs.getUChar("tzNoto", g_cfg.tzNoto);
 
   prefs.end();
   g_sporco = false;
@@ -160,14 +186,17 @@ void impostazioniSalva() {
   prefs.putBool  ("irrAuto", g_cfg.irrigAuto);
   prefs.putShort ("soilSg",  g_cfg.soilSoglia);
 
-  prefs.putULong("giorno",  g_cfg.giornoCorrente);
-  prefs.putUChar("irrOggi", g_cfg.irrigazioniOggi);
-  prefs.putFloat("litOggi", g_cfg.litriOggi);
-  prefs.putULong("ultIrr",  g_cfg.ultimaIrrigEpoch);
+  prefs.putULong("giorno",   g_cfg.giornoCorrente);
+  prefs.putUChar("irrOggi",  g_cfg.irrigazioniOggi);
+  prefs.putFloat("litOggi",  g_cfg.litriOggi);
+  prefs.putULong("ultIrr",   g_cfg.ultimaIrrigEpoch);
+  prefs.putULong("giornoPr", g_cfg.giornoProgrammata);
 
-  prefs.putFloat("litTot",  g_cfg.litriTotali);
-  prefs.putFloat("litUlt",  g_cfg.litriUltima);
-  prefs.putULong("blScart", g_cfg.backlogScartati);
+  prefs.putFloat("litTot",   g_cfg.litriTotali);
+  prefs.putFloat("litUlt",   g_cfg.litriUltima);
+  prefs.putULong("blScart",  g_cfg.backlogScartati);
+  prefs.putUChar("esitoUlt", g_cfg.esitoUltima);
+  prefs.putUChar("irrCorso", g_cfg.irrigInCorso);
 
   prefs.putFloat("voltDiv", g_cfg.voltDivider);
   prefs.putFloat("flImpL",  g_cfg.flussoImpLitro);
@@ -182,6 +211,8 @@ void impostazioniSalva() {
 
   prefs.putULong("sleepS", g_cfg.sleepSec);
   prefs.putULong("sensEn", g_cfg.sensoriAbilitati);
+  prefs.putLong ("tzOff",  (long)g_cfg.tzOffsetSec);
+  prefs.putUChar("tzNoto", g_cfg.tzNoto);
 
   prefs.end();
   g_sporco = false;
@@ -223,4 +254,15 @@ void impostazioniStampa() {
                 g_cfg.litriOggi, g_cfg.litriTotali);
   Serial.printf("[CFG] Sleep: %lu s | voltDivider=%.3f | impulsi/L=%.1f\n",
                 (unsigned long)g_cfg.sleepSec, g_cfg.voltDivider, g_cfg.flussoImpLitro);
+  // Lo scarto del fuso e il "non lo so ancora" sono due informazioni diverse
+  // e vanno stampate diversamente: UTC+0 e' un fuso valido, non un'assenza.
+  char fuso[32];
+  if (g_cfg.tzNoto) snprintf(fuso, sizeof(fuso), "UTC%+.1f h", g_cfg.tzOffsetSec / 3600.0f);
+  else              snprintf(fuso, sizeof(fuso), "SCONOSCIUTO (attendo il ponte)");
+
+  Serial.printf("[CFG] Fuso: %s | ultima irrigazione: %s (%.2f L)%s\n",
+                fuso,
+                irrigazioneEsitoTesto((EsitoIrrigazione)g_cfg.esitoUltima),
+                g_cfg.litriUltima,
+                g_cfg.irrigInCorso ? "  <-- VALVOLA RISULTAVA APERTA" : "");
 }

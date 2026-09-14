@@ -62,17 +62,36 @@ GH1;v=2;s=<seq>;t=<epoch>;<chiave>=<valore>;...
 ### 2.2 ACK — ponte → nodo
 
 ```
-ACK;s=<seq>;now=<epoch>
-ACK;s=<seq>;now=<epoch>;c=<cmdId>;o=<OPCODE>;a=<arg1>,<arg2>
+ACK;s=<seq>;now=<epoch>;tz=<offset>
+ACK;s=<seq>;now=<epoch>;tz=<offset>;c=<cmdId>;o=<OPCODE>;a=<arg1>,<arg2>
 ```
 
 | Campo | Significato |
 |---|---|
 | `s` | Sequenza confermata: deve coincidere o l'ACK viene ignorato |
-| `now` | Ora NTP del ponte. Il nodo ci risincronizza il DS1307 |
+| `now` | Ora NTP del ponte, **UTC**. Il nodo ci risincronizza il DS1307 |
+| `tz` | Secondi da sommare a `now` per l'ora civile (+7200 con l'ora legale) |
 | `c` | Id del comando accodato |
 | `o` | Opcode |
 | `a` | Argomenti, separati da virgola |
+
+**Perché `tz` è un campo a parte e non è già dentro `now`.** Tutti i timestamp
+del sistema sono UTC e devono restarci: `t` finisce nei grafici di Home
+Assistant, e due istanti si confrontano solo se hanno la stessa origine.
+L'orario di irrigazione però lo sceglie una persona guardando l'orologio di
+casa, quindi il nodo ha bisogno di entrambe le cose — l'istante assoluto e lo
+scarto per tradurlo in ora civile.
+
+Prima questo campo non c'era: il nodo scriveva l'epoch UTC nel DS1307 e poi
+confrontava `rtc.now().hour()` con l'orario impostato in Home Assistant.
+"Irriga alle 6:00" voleva dire le 6:00 UTC, cioè **le 8:00 italiane d'estate**,
+e nei log l'unica traccia era un `fuori_orario` alle 6 del mattino.
+
+`tz` manca solo se il ponte non è aggiornato. Il nodo distingue "campo assente"
+da "scarto zero" (che è un fuso legittimo) e, finché non l'ha mai ricevuto, non
+fa partire l'irrigazione automatica: pubblica l'esito `fuso_sconosciuto`
+invece di tirare a indovinare di due ore. **Nodo e ponte vanno quindi
+riflashati insieme.**
 
 Il ponte invia l'ACK **solo dopo** che la pubblicazione MQTT è riuscita. Se
 MQTT o il WiFi sono giù, l'ACK non parte, il nodo non riceve conferma e
@@ -143,7 +162,7 @@ grafici con dei -127.
 
 | Chiave | Descrizione |
 |---|---|
-| `irr` | Esito dell'ultimo ciclo di irrigazione (vedi §5) |
+| `irr` | Esito dell'irrigazione, o motivo per cui non è partita (vedi §5) |
 | `bl` | Record in attesa nel backlog su microSD |
 | `sAuto` | Irrigazione automatica attiva (0/1) |
 | `sOra` `sMin` | Orario programmato |
@@ -244,17 +263,39 @@ resto.
 
 ## 5. Esiti dell'irrigazione (campo `irr`)
 
+Il campo dice due cose diverse a seconda di cosa è successo nel risveglio.
+
+**Se l'acqua è scorsa davvero**, riporta com'è andata — e vale anche per il
+bottone "Irriga ora": prima l'esito di un'irrigazione manuale viaggiava solo
+nel campo `det` del pacchetto di esito comando, quindi in Home Assistant non
+compariva mai, e se quel pacchetto si perdeva (o il nodo si resettava prima di
+mandarlo) non ne restava traccia da nessuna parte.
+
+**Negli altri risvegli** riporta il motivo per cui l'automatica non è partita,
+che è la diagnostica per cui il campo era nato.
+
 | Valore | Significato |
 |---|---|
 | `ok` | Eseguita regolarmente |
 | `fuori_orario` | Non è l'ora programmata (il caso normale, 95 risvegli su 96) |
 | `auto_disattivata` | Programmazione automatica spenta |
-| `gia_fatta` | Raggiunto il massimo giornaliero |
+| `gia_fatta` | L'appuntamento di oggi è già stato onorato, o massimo giornaliero |
 | `troppo_presto` | Meno di `IRRIG_MIN_INTERVALLO_M` dall'ultima |
 | `terreno_umido` | Il terreno è già sopra soglia: acqua risparmiata |
 | `budget_esaurito` | Superato il budget litri della giornata |
 | `ora_non_attendibile` | Orologio non sincronizzato: non si rischia |
+| `fuso_sconosciuto` | Il ponte non ha ancora detto in che fuso siamo (vedi §2.2) |
 | `nessun_flusso` | Valvola aperta ma il flussometro non ha contato nulla |
+| `interrotta` | Il nodo si è resettato con la valvola ancora aperta |
+
+`interrotta` non è una diagnosi di comodo: l'esito e i litri vengono scritti in
+NVS **prima** di aprire, con questo valore, e sostituiti solo alla chiusura
+della valvola. Se al risveglio il marcatore è ancora alzato vuol dire che
+l'irrigazione non è mai arrivata in fondo. Insieme compare `acqua = 0`, che è
+la verità disponibile: il conteggio degli impulsi vive in RAM e il reset se
+l'è portato via. Prima di questo marcatore un'irrigazione interrotta spariva
+del tutto, e in Home Assistant restava esposto l'esito di quella *precedente*
+come se fosse appena successo.
 
 `nessun_flusso` è l'allarme più utile del sistema: segnala serbatoio vuoto,
 pompa guasta, filtro otturato, tubo staccato — oppure semplicemente il

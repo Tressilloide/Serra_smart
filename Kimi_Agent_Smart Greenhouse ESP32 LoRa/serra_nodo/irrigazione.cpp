@@ -1,5 +1,6 @@
 #include "irrigazione.h"
 #include "impostazioni.h"
+#include "orologio.h"
 #include "sensori.h"
 #include "watchdog.h"
 #include "backlog.h"
@@ -14,6 +15,36 @@ static bool     g_eseguitaOra  = false;
 float    irrigazioneLitriUltima()  { return g_cfg.litriUltima; }
 uint32_t irrigazioneDurataUltima() { return g_durataUltima; }
 bool     irrigazioneEseguitaOra()  { return g_eseguitaOra; }
+
+// Anche l'esito vive in NVS, per lo stesso motivo dei litri e per uno in piu':
+// deve sopravvivere pure a un reset avvenuto a valvola aperta.
+EsitoIrrigazione irrigazioneEsitoUltima() { return (EsitoIrrigazione)g_cfg.esitoUltima; }
+
+bool irrigazioneRecuperaInterrotta() {
+  if (!g_cfg.irrigInCorso) return false;
+
+  /*
+   * In NVS la valvola risulta aperta, quindi l'ultima irrigazione non e' mai
+   * arrivata alla riga che ne scrive l'esito: il nodo si e' resettato mentre
+   * l'acqua scorreva (watchdog, panic, calo di tensione all'avvio della pompa).
+   *
+   * esitoUltima contiene gia' IRR_INTERROTTA, scritto prima di aprire, e
+   * litriUltima e' gia' a zero: qui non c'e' niente da indovinare, basta
+   * spegnere il marcatore e far sapere al chiamante che c'e' qualcosa da
+   * riferire. Senza questo un'irrigazione interrotta spariva del tutto, e in
+   * Home Assistant restava esposto l'esito di quella PRECEDENTE come se fosse
+   * appena successo.
+   */
+  Serial.println(F("[IRRIG] ATTENZIONE: in NVS la valvola risultava ancora aperta."));
+  Serial.println(F("[IRRIG] L'ultima irrigazione e' stata interrotta da un reset."));
+  backlogLog("IRRIGAZIONE INTERROTTA da un reset");
+
+  g_cfg.irrigInCorso = 0;
+  g_cfg.esitoUltima  = IRR_INTERROTTA;
+  impostazioniModificate();
+  impostazioniSalva();
+  return true;
+}
 
 // ---------------------------------------------------------------------------
 
@@ -40,6 +71,8 @@ const char* irrigazioneEsitoTesto(EsitoIrrigazione e) {
     case IRR_NO_BUDGET:     return "budget_esaurito";
     case IRR_NO_RTC:        return "ora_non_attendibile";
     case IRR_ERR_FLUSSO:    return "nessun_flusso";
+    case IRR_NO_FUSO:       return "fuso_sconosciuto";
+    case IRR_INTERROTTA:    return "interrotta";
     default:                return "sconosciuto";
   }
 }
@@ -53,30 +86,74 @@ EsitoIrrigazione irrigazioneValuta(const DateTime& adesso, bool rtcAttendibile, 
   // ripetizione a ogni risveglio credendo che sia sempre l'ora programmata.
   if (!rtcAttendibile) return IRR_NO_RTC;
 
+  /*
+   * Senza il fuso non si apre nulla, per lo stesso motivo per cui non si apre
+   * senza un'ora attendibile: l'orario programmato e' ora civile, e finche'
+   * non si sa quanto dista da UTC quel "6:00" puo' voler dire le 8:00 come le
+   * 4:00. Capita solo dopo un flash o un RESETCFG, e dura un risveglio: il
+   * primo ACK porta il fuso insieme all'ora.
+   *
+   * Se invece dura, vuol dire che il ponte non e' stato aggiornato insieme al
+   * nodo. In Home Assistant si legge "fuso_sconosciuto" ed e' esattamente
+   * quello che sta succedendo.
+   */
+  if (!orologioFusoNoto()) return IRR_NO_FUSO;
+
   if (!g_cfg.irrigAuto) return IRR_NO_AUTO;
 
-  // Finestra oraria: il risveglio non cade mai esattamente al minuto giusto,
-  // quindi si accetta tutta la finestra che va dall'orario programmato fino
-  // al risveglio successivo.
-  uint32_t minutiOra   = (uint32_t)adesso.hour() * 60UL + adesso.minute();
-  uint32_t minutiSched = (uint32_t)g_cfg.irrigOra * 60UL + g_cfg.irrigMinuto;
-  uint32_t finestraMin = (g_cfg.sleepSec / 60UL) + 1UL;
+  /*
+   * L'appuntamento di oggi si onora UNA volta sola.
+   *
+   * Non basta irrigazioniOggi, che conta anche le manuali: un "Irriga ora"
+   * premuto alle 5 non deve far saltare l'irrigazione programmata delle 6.
+   * Ed e' questo marcatore a rendere sicura la finestra larga qui sotto: per
+   * quanto a lungo resti aperta, l'acqua programmata scorre una volta al
+   * giorno e basta.
+   */
+  if (g_cfg.giornoCorrente != 0 && g_cfg.giornoProgrammata == g_cfg.giornoCorrente)
+    return IRR_NO_GIA_FATTA;
 
-  if (finestraMin > 1440UL) finestraMin = 1440UL;   // una finestra non puo'
-                                                   // durare piu' di un giorno
+  // Finestra oraria in SECONDI e non in minuti: la tolleranza sul risveglio
+  // anticipato si misura in secondi, e arrotondare ai minuti se la mangerebbe.
+  uint32_t secOra   = (uint32_t)adesso.hour()   * 3600UL
+                    + (uint32_t)adesso.minute() * 60UL
+                    + (uint32_t)adesso.second();
+  uint32_t secSched = ((uint32_t)g_cfg.irrigOra    * 3600UL
+                    +  (uint32_t)g_cfg.irrigMinuto * 60UL) % 86400UL;
 
   /*
    * Distanza in avanti dall'orario programmato, calcolata sul giro delle 24 h.
    *
-   * Il confronto diretto "minutiOra >= minutiSched" sembra ovvio ma si rompe a
-   * mezzanotte: con la pianificazione alle 23:50 la finestra andrebbe da 1430
-   * a 1446, ma i minuti del giorno arrivano solo a 1439 e poi tornano a 0. Il
-   * risveglio delle 23:45 e' troppo presto, quello delle 00:00 ricomincia da
-   * zero, e la serra non verrebbe irrigata MAI senza dire perche'.
+   * Il confronto diretto "secOra >= secSched" sembra ovvio ma si rompe a
+   * mezzanotte: con la pianificazione alle 23:50 la finestra andrebbe oltre la
+   * fine del giorno, ma i secondi tornano a zero. Il risveglio delle 23:45 e'
+   * troppo presto, quello delle 00:00 ricomincia da capo, e la serra non
+   * verrebbe irrigata MAI senza dire perche'.
    */
-  uint32_t daSched = (minutiOra + 1440UL - (minutiSched % 1440UL)) % 1440UL;
+  uint32_t daSched = (secOra + 86400UL - secSched) % 86400UL;
 
-  if (daSched >= finestraMin) return IRR_NO_ORARIO;
+  /*
+   * Risveglio ANTICIPATO (vedi IRRIG_ANTICIPO_SEC in config.h).
+   *
+   * Il timer del deep sleep si sveglia qualche secondo prima del dovuto, e su
+   * questo calcolo circolare "pochi secondi prima delle 6:00" non vale 0 ma
+   * 86396: quasi un giorno di RITARDO. Il risveglio allineato all'orario
+   * programmato mancava quindi la finestra ogni singola volta, e l'irrigazione
+   * restava appesa a quello successivo con pochissimo margine.
+   */
+  if (daSched > 86400UL - (uint32_t)IRRIG_ANTICIPO_SEC) daSched = 0;
+
+  /*
+   * Ampiezza: un intervallo di sleep (il tempo che serve perche' un risveglio
+   * veda l'appuntamento), piu' un minuto di durata del ciclo, piu' la finestra
+   * di recupero che assorbe risvegli slittati e riavvii. Prima bastava un
+   * risveglio in ritardo di due minuti per lasciare la serra a secco fino al
+   * giorno dopo, e nei log si leggeva soltanto "fuori_orario".
+   */
+  uint32_t finestraSec = g_cfg.sleepSec + 60UL + (uint32_t)IRRIG_RECUPERO_SEC;
+  if (finestraSec > 86400UL) finestraSec = 86400UL;
+
+  if (daSched >= finestraSec) return IRR_NO_ORARIO;
 
   if (g_cfg.irrigazioniOggi >= IRRIG_MAX_AL_GIORNO) return IRR_NO_GIA_FATTA;
 
@@ -103,7 +180,8 @@ EsitoIrrigazione irrigazioneValuta(const DateTime& adesso, bool rtcAttendibile, 
 //  Esecuzione
 // ---------------------------------------------------------------------------
 
-EsitoIrrigazione irrigazioneEsegui(uint32_t durataSec, float litriTarget, uint32_t epoch) {
+EsitoIrrigazione irrigazioneEsegui(uint32_t durataSec, float litriTarget, uint32_t epoch,
+                                   bool programmata) {
   // --- Tetti di sicurezza, applicati sempre e comunque -----------------------
 
   if (durataSec == 0) durataSec = g_cfg.irrigDurataSec;
@@ -143,6 +221,28 @@ EsitoIrrigazione irrigazioneEsegui(uint32_t durataSec, float litriTarget, uint32
 
   g_cfg.irrigazioniOggi++;
   g_cfg.ultimaIrrigEpoch = epoch;
+
+  // L'appuntamento di oggi risulta onorato da adesso, non da quando l'acqua
+  // avra' finito di scorrere: se il nodo muore a valvola aperta non deve
+  // riprovarci al riavvio.
+  if (programmata) g_cfg.giornoProgrammata = g_cfg.giornoCorrente;
+
+  /*
+   * Verita' pessimistica scritta PRIMA di aprire: "sto irrigando, e finche'
+   * non dico il contrario e' finita male".
+   *
+   * Il nodo si resetta davvero, ed e' successo a valvola aperta: esito e litri
+   * venivano scritti solo alla fine, quindi quell'irrigazione spariva senza
+   * lasciare traccia e in Home Assistant restava l'esito della PRECEDENTE,
+   * come se non fosse successo niente. Con questi tre campi il riavvio
+   * successivo trova scritto cosa stava succedendo. Azzerare litriUltima fa
+   * parte della stessa onesta': i litri di prima non sono i litri di adesso,
+   * e dichiararli sarebbe peggio che ammettere di non saperli.
+   */
+  g_cfg.irrigInCorso = 1;
+  g_cfg.esitoUltima  = IRR_INTERROTTA;
+  g_cfg.litriUltima  = 0.0f;
+
   impostazioniModificate();
   impostazioniSalva();
 
@@ -278,8 +378,12 @@ EsitoIrrigazione irrigazioneEsegui(uint32_t durataSec, float litriTarget, uint32
 
     flussoStacca();
   }
-  g_cfg.litriUltima = litri;
-  g_eseguitaOra     = true;
+  const EsitoIrrigazione esito = anomaliaFlusso ? IRR_ERR_FLUSSO : IRR_OK;
+
+  g_cfg.litriUltima  = litri;
+  g_cfg.esitoUltima  = (uint8_t)esito;   // sostituisce il "interrotta" provvisorio
+  g_cfg.irrigInCorso = 0;                // valvola chiusa: marcatore spento
+  g_eseguitaOra      = true;
   impostazioniModificate();   // va salvato anche se sono zero litri
 
   // Il terreno e' appena cambiato: la lettura memorizzata non vale piu' e la
@@ -302,5 +406,5 @@ EsitoIrrigazione irrigazioneEsegui(uint32_t durataSec, float litriTarget, uint32
                 (unsigned long)g_durataUltima, litri, g_cfg.litriOggi, g_cfg.litriTotali);
   backlogLog(String("IRRIGAZIONE FINE durata=") + g_durataUltima + "s litri=" + litri);
 
-  return anomaliaFlusso ? IRR_ERR_FLUSSO : IRR_OK;
+  return esito;
 }

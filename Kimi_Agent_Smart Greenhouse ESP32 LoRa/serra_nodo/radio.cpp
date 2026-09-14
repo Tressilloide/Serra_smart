@@ -92,6 +92,11 @@ static bool attendiAck(uint32_t seqAttesa, uint32_t timeoutMs, RispostaAck& out)
     out.rssi       = LoRa.packetRssi();
     out.snr        = LoRa.packetSnr();
 
+    // Fuso orario: presente solo se il ponte e' aggiornato (vedi RispostaAck).
+    const char* tz  = pkt.valore("tz");
+    out.tzValido    = (tz != nullptr && *tz != '\0');
+    out.tzOffsetSec = out.tzValido ? (int32_t)atol(tz) : 0;
+
     // Comando eventualmente accodato all'ACK dal ponte
     const char* opcode = pkt.valore("o");
     if (opcode && *opcode) {

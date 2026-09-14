@@ -34,6 +34,17 @@ struct RispostaAck {
   uint32_t seq;         // sequenza confermata
   uint32_t epochPonte;  // ora NTP del ponte (0 se non disponibile)
 
+  /*
+   * Scarto fra ora civile e UTC dichiarato dal ponte (campo "tz" dell'ACK).
+   *
+   * tzValido serve a distinguere "il ponte dice che siamo a UTC+0" da "il
+   * ponte non l'ha detto": con un firmware del ponte piu' vecchio il campo
+   * manca, e senza questo flag il nodo leggerebbe zero e tornerebbe a
+   * ragionare in UTC senza che nessuno se ne accorga.
+   */
+  bool     tzValido;
+  int32_t  tzOffsetSec;
+
   bool     haComando;
   uint32_t cmdId;
   char     opcode[12];

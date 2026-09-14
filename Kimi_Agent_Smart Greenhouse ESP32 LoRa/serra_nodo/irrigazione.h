@@ -43,14 +43,25 @@ enum EsitoIrrigazione : uint8_t {
   IRR_NO_TERRENO,           // Terreno gia' abbastanza umido
   IRR_NO_BUDGET,            // Budget litri giornaliero esaurito
   IRR_NO_RTC,               // Ora non attendibile: non si rischia
-  IRR_ERR_FLUSSO            // Eseguita ma senza flusso d'acqua rilevato
+  IRR_ERR_FLUSSO,           // Eseguita ma senza flusso d'acqua rilevato
+  IRR_NO_FUSO,              // Il ponte non ha ancora detto in che fuso siamo
+  IRR_INTERROTTA            // Il nodo si e' resettato a valvola aperta
 };
+// I valori finiscono in NVS (g_cfg.esitoUltima): aggiungine in FONDO, mai in
+// mezzo, o dopo un aggiornamento del firmware la NVS racconterebbe un'altra
+// storia. IRR_INTERROTTA deve restare l'ultimo (la validazione lo usa come
+// limite superiore).
 
 // Primissima istruzione del setup(): porta il relay in stato sicuro.
 void relayOffImmediato();
 
 /*
  * Decide se far partire l'irrigazione automatica in questo risveglio.
+ *
+ * "adesso" deve essere l'ora LOCALE (orologioLocale()), non quella del
+ * DS1307: l'orario programmato lo sceglie una persona guardando l'orologio di
+ * casa, non UTC.
+ *
  * soilMin = umidita' minima tra i sensori terreno (NAN se non disponibile).
  * Non apre nulla: ritorna solo la decisione e il motivo.
  */
@@ -64,7 +75,8 @@ EsitoIrrigazione irrigazioneValuta(const DateTime& adesso, bool rtcAttendibile, 
  *   epoch       : ora corrente, per registrare l'ultima irrigazione
  * Ritorna IRR_OK, IRR_ERR_FLUSSO, oppure il motivo del rifiuto.
  */
-EsitoIrrigazione irrigazioneEsegui(uint32_t durataSec, float litriTarget, uint32_t epoch);
+EsitoIrrigazione irrigazioneEsegui(uint32_t durataSec, float litriTarget, uint32_t epoch,
+                                   bool programmata = false);
 
 // Litri erogati dall'ultima irrigazione eseguita in questo ciclo di veglia.
 float irrigazioneLitriUltima();
@@ -74,6 +86,24 @@ uint32_t irrigazioneDurataUltima();
 
 // true se in questo ciclo di veglia e' stata eseguita un'irrigazione.
 bool irrigazioneEseguitaOra();
+
+/*
+ * Esito dell'ultima irrigazione davvero eseguita, letto dalla NVS: sopravvive
+ * al deep sleep E ai reset. Vale anche per le irrigazioni manuali, che prima
+ * non comparivano da nessuna parte se non nel singolo pacchetto di esito.
+ */
+EsitoIrrigazione irrigazioneEsitoUltima();
+
+/*
+ * Da chiamare al risveglio, dopo impostazioniCarica() e backlogInit().
+ *
+ * Se in NVS risulta una valvola ancora aperta vuol dire che l'irrigazione
+ * precedente non e' mai arrivata in fondo: il nodo si e' resettato mentre
+ * l'acqua scorreva. Spegne il marcatore e ritorna true, cosi' il chiamante
+ * sa che c'e' un'irrigazione da raccontare a Home Assistant invece di
+ * lasciarla sparire nel nulla.
+ */
+bool irrigazioneRecuperaInterrotta();
 
 // Descrizione breve dell'esito, da inviare a Home Assistant.
 const char* irrigazioneEsitoTesto(EsitoIrrigazione e);

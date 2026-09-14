@@ -18,7 +18,7 @@
 // ======================= IDENTITA' DEL NODO =================================
 
 #define NODE_ID          "GH1"    // Identificativo di questo nodo (max 8 char)
-#define FW_VERSION       "2.1.0"  // Riportata in Home Assistant
+#define FW_VERSION       "2.2.0"  // Riportata in Home Assistant
 
 // ======================= RADIO LoRa =========================================
 // Questi parametri DEVONO essere identici sul ponte in camera.
@@ -44,10 +44,45 @@
 // ======================= IRRIGAZIONE — DEFAULT ==============================
 // Modificabili da Home Assistant con il comando SCHED.
 
-#define IRRIG_ORA_DEF    6       // Ora di inizio irrigazione (0-23)
+#define IRRIG_ORA_DEF    6        // Ora di inizio irrigazione (0-23)
 #define IRRIG_MIN_DEF    0        // Minuto di inizio (0-59)
 #define IRRIG_SEC_DEF    300      // Durata in secondi (300 = 5 minuti)
 #define IRRIG_AUTO_DEF   true     // Irrigazione automatica attiva?
+
+// L'orario e' ORA CIVILE ITALIANA, non UTC: il nodo somma all'ora del DS1307
+// lo scarto del fuso che il ponte gli comunica a ogni ACK.
+
+/*
+ * Tolleranza sul risveglio ANTICIPATO.
+ *
+ * Il timer del deep sleep dell'ESP32 non e' preciso: conta su un oscillatore
+ * RC calibrato alla meglio, e in pratica si sveglia qualche secondo PRIMA
+ * dell'istante calcolato. Misurato sul campo: con sleep da 900 s i risvegli
+ * cadono alle :59:56, :14:58, :29:58 invece che sull'ora tonda.
+ *
+ * Senza tolleranza quei 4 secondi sono un disastro silenzioso: con
+ * l'irrigazione alle 6:00 il risveglio delle 5:59:56 non e' "4 secondi
+ * presto", e' 23 ore e 59 minuti TARDI, perche' la distanza dall'orario
+ * programmato si calcola sul giro delle 24 ore. La finestra veniva quindi
+ * mancata sistematicamente al primo colpo e restava appesa al risveglio
+ * successivo, 15 minuti dopo, con pochissimo margine residuo.
+ */
+#define IRRIG_ANTICIPO_SEC   300     // 5 minuti prima dell'ora contano come "adesso"
+
+/*
+ * Finestra di RECUPERO dopo l'orario programmato.
+ *
+ * La finestra minima e' un intervallo di sleep, il tempo che serve perche' il
+ * risveglio successivo veda l'appuntamento. Ma basta un ciclo piu' lungo del
+ * solito, una ritrasmissione LoRa o un riavvio per spostare il risveglio di
+ * un paio di minuti, e la serra restava a secco per l'intera giornata senza
+ * che nulla segnalasse il perche'.
+ *
+ * Il recupero e' sicuro perche' e' accoppiato a giornoProgrammata in NVS:
+ * l'appuntamento di oggi si onora una volta sola, e la finestra larga serve
+ * solo a trovare un risveglio buono, non a irrigare piu' volte.
+ */
+#define IRRIG_RECUPERO_SEC   3600    // fino a un'ora di ritardo e' ancora "oggi"
 
 // ---------------------------------------------------------------------------
 //  TETTI DI SICUREZZA — NON modificabili da remoto.

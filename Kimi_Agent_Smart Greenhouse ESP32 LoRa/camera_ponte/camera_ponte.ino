@@ -231,6 +231,49 @@ static uint32_t oraCorrente() {
   return (adesso > 1700000000L) ? (uint32_t)adesso : 0;
 }
 
+/*
+ * Scarto in secondi fra l'ora civile e UTC in questo istante: +7200 con l'ora
+ * legale, +3600 con quella solare.
+ *
+ * Serve perche' time() restituisce UTC e il nodo scrive quel valore tale e
+ * quale nel DS1307, per poi confrontare rtc.now().hour() con l'orario
+ * programmato da Home Assistant. Senza questo campo "irriga alle 6:00"
+ * significava le 6:00 UTC, cioe' le 8:00 italiane d'estate e le 7:00
+ * d'inverno: l'acqua arrivava ogni giorno due ore dopo il previsto.
+ *
+ * Le regole dell'ora legale stanno solo qui, dentro NTP_TZ, ed e' giusto che
+ * ci restino: il nodo non ha ne' modo ne' motivo di conoscerle, gli basta il
+ * numero che il ponte gli passa a ogni ACK.
+ *
+ * Il calcolo NON usa tm_gmtoff: e' un'estensione che newlib espone solo con
+ * certe combinazioni di macro di visibilita', e una compilazione che oggi
+ * funziona potrebbe smettere di farlo al prossimo aggiornamento del core.
+ * Confrontare le due rappresentazioni dello stesso istante e' equivalente e
+ * non dipende da nulla.
+ */
+static int32_t offsetFuso() {
+  time_t adesso = time(nullptr);
+  if (adesso < 1700000000L) return 0;
+
+  struct tm loc, utc;
+  localtime_r(&adesso, &loc);
+  gmtime_r   (&adesso, &utc);
+
+  int32_t scarto = (int32_t)(loc.tm_hour - utc.tm_hour) * 3600L
+                 + (int32_t)(loc.tm_min  - utc.tm_min ) * 60L
+                 + (int32_t)(loc.tm_sec  - utc.tm_sec );
+
+  // Le due date possono cadere a cavallo della mezzanotte: in quel caso la
+  // sola differenza oraria e' sbagliata di un giorno intero. Lo scarto fra i
+  // giorni dell'anno vale +-1 in condizioni normali e +-364/365 a Capodanno,
+  // quando l'anno cambia sotto i piedi al confronto.
+  int giorni = loc.tm_yday - utc.tm_yday;
+  if (giorni ==  1 || giorni < -1) scarto += 86400L;
+  if (giorni == -1 || giorni >  1) scarto -= 86400L;
+
+  return scarto;
+}
+
 // ============================ MQTT ==========================================
 
 static void mqttCallback(char* topic, byte* payload, unsigned int len) {
@@ -424,7 +467,10 @@ static void inviaAck(uint32_t seq, bool allegaComando) {
   accoda("%s;s=%lu", PROTO_PREFIX_ACK, (unsigned long)seq);
 
   uint32_t adesso = oraCorrente();
-  if (adesso > 0) accoda(";now=%lu", (unsigned long)adesso);
+  if (adesso > 0) {
+    accoda(";now=%lu", (unsigned long)adesso);
+    accoda(";tz=%ld",  (long)offsetFuso());
+  }
 
   if (allegaComando && !codaVuota()) {
     ComandoInCoda cmd;

@@ -66,6 +66,61 @@ static EsitoIrrigazione g_esitoIrrig = IRR_NO_ORARIO;
 static bool             g_linkOk     = false;
 static uint32_t         g_wakeExtraSec = 0;
 
+/*
+ * true quando al risveglio si e' trovata in NVS un'irrigazione interrotta da
+ * un reset: c'e' un fatto da riferire a Home Assistant anche se in questo
+ * ciclo la valvola non si e' mai aperta.
+ */
+static bool             g_irrigazioneDaRiferire = false;
+
+// ---------------------------------------------------------------------------
+
+/*
+ * Tutto cio' che un ACK porta oltre alla conferma: l'ora del ponte e lo scarto
+ * del fuso orario.
+ *
+ * Va applicato a OGNI ack e non solo a quello del pacchetto principale,
+ * altrimenti un nodo che in un risveglio parla soltanto per svuotare il
+ * backlog resterebbe indietro su entrambi.
+ *
+ * L'ordine conta: prima il fuso, poi il giorno, perche' il giorno dei
+ * contatori si calcola sull'ora locale.
+ */
+static void assimilaAck(const RispostaAck& ack) {
+  if (!ack.ricevuto) return;
+
+  // Il fuso arriva solo da un ponte aggiornato: con uno vecchio il campo manca
+  // e si tiene quello gia' in NVS, invece di ricadere silenziosamente su UTC.
+  if (ack.tzValido) orologioImpostaFuso(ack.tzOffsetSec);
+
+  // L'ora del ponte viaggia su ogni ACK: l'orologio si corregge da solo,
+  // senza bisogno di comandi manuali ne' di ricompilare lo sketch.
+  if (ack.epochPonte > 0) orologioSincronizza(ack.epochPonte);
+
+  if (orologioAttendibile())
+    impostazioniNuovoGiorno(orologioGiorno(orologioLocale()));
+}
+
+/*
+ * Cosa scrivere nel campo "irr", quello che alimenta "Esito irrigazione".
+ *
+ * Se in questo ciclo l'acqua e' davvero scorsa — o se al risveglio si e'
+ * scoperta un'irrigazione interrotta da un reset — e' QUELLO il fatto da
+ * riferire, e vale anche per il bottone "Irriga ora" di Home Assistant.
+ * Prima l'esito di un'irrigazione manuale viaggiava solo dentro il campo
+ * "det" del pacchetto di esito comando: in "Esito irrigazione" non compariva
+ * mai, e se quel pacchetto si perdeva non ne restava traccia da nessuna parte.
+ *
+ * Negli altri risvegli il campo torna a dire perche' l'automatica non e'
+ * partita ("fuori_orario", "ora_non_attendibile", ...), che e' la diagnostica
+ * per cui era nato.
+ */
+static const char* esitoDaSegnalare() {
+  if (g_irrigazioneDaRiferire || irrigazioneEseguitaOra())
+    return irrigazioneEsitoTesto(irrigazioneEsitoUltima());
+  return irrigazioneEsitoTesto(g_esitoIrrig);
+}
+
 // ===========================================================================
 //  Costruzione dei pacchetti
 // ===========================================================================
@@ -99,7 +154,7 @@ static void aggiungiStato(PacchettoKV& pkt) {
   pkt.aggiungiI("sSoil", g_cfg.soilSoglia);
   pkt.aggiungiU("slp",   g_cfg.sleepSec);
 
-  pkt.aggiungi ("irr",   irrigazioneEsitoTesto(g_esitoIrrig));
+  pkt.aggiungi ("irr",   esitoDaSegnalare());
   pkt.aggiungiU("bl",    backlogConta());
 }
 
@@ -218,6 +273,7 @@ static void finestraManutenzione(uint32_t secondi) {
 
     RispostaAck ack;
     if (inviaPacchetto(ping, ack)) {
+      assimilaAck(ack);
       g_wakeExtraSec = 0;              // azzerato: un nuovo WAKE puo' prorogarlo
       gestisciComandi(ack);
       if (g_wakeExtraSec > 0) fine = millis() + g_wakeExtraSec * 1000UL;
@@ -235,7 +291,7 @@ static void finestraManutenzione(uint32_t secondi) {
 static bool consegnaRecordStorico(const char* riga) {
   RispostaAck ack;
   bool ok = radioInviaConAck(riga, ack);
-  if (ok && ack.epochPonte > 0) orologioSincronizza(ack.epochPonte);
+  if (ok) assimilaAck(ack);
   return ok;
 }
 
@@ -328,15 +384,26 @@ void setup() {
   // (4) Orologio
   Wire.begin(I2C_SDA, I2C_SCL);
   orologioInit();
-  DateTime adesso = orologioAdesso();
-  orologioStampa(adesso);
+  DateTime adesso = orologioAdesso();   // UTC: e' l'ora dei timestamp e dei
+  orologioStampa(adesso);               // conti fra istanti, non quella civile
 
+  // Il giorno dei contatori e' quello LOCALE: sull'ora UTC "le irrigazioni di
+  // oggi" si azzererebbero alle 2 del mattino, in mezzo alla notte italiana.
   if (orologioAttendibile())
-    impostazioniNuovoGiorno(orologioGiorno(adesso));
+    impostazioniNuovoGiorno(orologioGiorno(orologioLocale()));
 
   // Periferiche
   sensoriInit();
   backlogInit();
+
+  /*
+   * Il backlog serve gia' qui: se l'irrigazione precedente e' stata interrotta
+   * da un reset, la cosa va anche scritta su SD e non solo riferita a Home
+   * Assistant, perche' e' il genere di evento che si capisce solo rileggendo
+   * la sequenza di quello che e' successo intorno.
+   */
+  g_irrigazioneDaRiferire = irrigazioneRecuperaInterrotta();
+
   bool radioOk = radioInit();
 
   // (5) Umidita' del terreno PRIMA di decidere: e' la lettura che determina
@@ -345,10 +412,14 @@ void setup() {
   float soilMin = sensoriSoilMin();
 
   // (6) Irrigazione automatica
-  g_esitoIrrig = irrigazioneValuta(adesso, orologioAttendibile(), soilMin);
+  //     L'orario programmato lo sceglie una persona guardando l'orologio di
+  //     casa, quindi la decisione si prende sull'ora LOCALE. L'epoch che viene
+  //     registrato resta UTC, come ogni altro istante del sistema.
+  g_esitoIrrig = irrigazioneValuta(orologioLocale(), orologioAttendibile(), soilMin);
 
   if (g_esitoIrrig == IRR_OK) {
-    g_esitoIrrig = irrigazioneEsegui(g_cfg.irrigDurataSec, 0.0f, adesso.unixtime());
+    g_esitoIrrig = irrigazioneEsegui(g_cfg.irrigDurataSec, 0.0f, adesso.unixtime(),
+                                     /*programmata=*/true);
   } else {
     Serial.printf("[IRRIG] Non irrigo: %s\n", irrigazioneEsitoTesto(g_esitoIrrig));
   }
@@ -371,13 +442,7 @@ void setup() {
     g_linkOk = inviaPacchetto(pkt, ack);
 
     if (g_linkOk) {
-      // L'ora del ponte viaggia su ogni ACK: l'orologio si corregge da solo,
-      // senza bisogno di comandi manuali ne' di ricompilare lo sketch.
-      if (ack.epochPonte > 0 && orologioSincronizza(ack.epochPonte)) {
-        DateTime nuova = orologioAdesso();
-        impostazioniNuovoGiorno(orologioGiorno(nuova));
-      }
-
+      assimilaAck(ack);
       gestisciComandi(ack);
     }
   }

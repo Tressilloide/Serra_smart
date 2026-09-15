@@ -18,7 +18,7 @@
 // ======================= IDENTITA' DEL NODO =================================
 
 #define NODE_ID          "GH1"    // Identificativo di questo nodo (max 8 char)
-#define FW_VERSION       "2.2.0"  // Riportata in Home Assistant
+#define FW_VERSION       "2.3.0"  // Riportata in Home Assistant
 
 // ======================= RADIO LoRa =========================================
 // Questi parametri DEVONO essere identici sul ponte in camera.
@@ -32,6 +32,20 @@
 
 #define TX_RETRIES       3        // Tentativi di invio per pacchetto
 #define ACK_TIMEOUT_MS   2000     // Attesa ACK dal ponte dopo ogni invio
+
+/*
+ * Quanto puo' durare una trasmissione, in multipli del tempo di volo
+ * previsto, prima di dichiarare piantato il modulo LoRa.
+ *
+ * Il tempo di volo di un pacchetto e' calcolabile in anticipo (vedi
+ * tempoDiVoloMs() in radio.cpp): con SF7 e BW 125 kHz va da 57 ms per un
+ * pacchetto corto a 390 ms per uno pieno. Concedere il triplo significa
+ * che nessuna trasmissione legittima viene mai interrotta, e che una
+ * trasmissione che non finisce costa meno di un secondo e mezzo invece dei
+ * tre minuti del watchdog.
+ */
+#define TX_GUARDIA_X     3        // Fattore di guardia sul tempo di volo
+#define TX_GUARDIA_MS    100      // ...piu' questo margine fisso
 
 // ======================= TEMPI ==============================================
 

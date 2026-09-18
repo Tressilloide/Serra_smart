@@ -170,6 +170,7 @@ grafici con dei -127.
 | `sSoil` | Soglia umidità terreno (−1 = disattivata) |
 | `slp` | Intervallo di deep sleep in secondi |
 | `fw` `rst` | Versione firmware e motivo dell'ultimo reset (solo dopo un reset anomalo) |
+| `tp` | Tappa del ciclo in cui il nodo si era fermato prima di riavviarsi, in chiaro (`tx_stato`, `sd`, `irrigazione`…). Accompagna `fw` e `rst`, quindi compare solo dopo un reset anomalo, e manca alla primissima accensione perché la memoria RTC non contiene ancora niente di attendibile |
 
 I campi `s*` esistono perché Home Assistant mostri la configurazione **reale
 del nodo** invece di quella che crede di aver impostato: se un comando si è

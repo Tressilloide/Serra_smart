@@ -18,7 +18,7 @@
 // ======================= IDENTITA' DEL NODO =================================
 
 #define NODE_ID          "GH1"    // Identificativo di questo nodo (max 8 char)
-#define FW_VERSION       "2.3.0"  // Riportata in Home Assistant
+#define FW_VERSION       "2.4.0"  // Riportata in Home Assistant
 
 // ======================= RADIO LoRa =========================================
 // Questi parametri DEVONO essere identici sul ponte in camera.
@@ -52,7 +52,7 @@
 #define SLEEP_TIME_SEC   900      // Intervallo di deep sleep in secondi
                                   // (900 = 15 min, 3600 = 1 ora)
 #define SLEEP_MIN_SEC    60       // Non dormire mai meno di cosi'
-#define WDT_SETUP_SEC    180      // Watchdog globale: se il setup() si blocca
+#define WDT_SETUP_SEC    60       // Watchdog globale: se il setup() si blocca
                                   // (SD, LoRa, I2C) il nodo si riavvia da solo
 
 // ======================= IRRIGAZIONE — DEFAULT ==============================

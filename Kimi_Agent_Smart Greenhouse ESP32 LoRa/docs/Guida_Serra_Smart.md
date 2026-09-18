@@ -471,6 +471,7 @@ al punto successivo.
 | **Credenziali nel repository** | Password MQTT dentro git | `secrets.h` in `.gitignore` |
 | **Buffer del pacchetto da 128 byte** | Troncamento silenzioso appena si aggiungevano sensori | Tetto a 250 byte con flag `trunc` esplicito |
 | **Trasmissione LoRa senza timeout** | `LoRa.endPacket()` aspetta il flag di TxDone con un ciclo senza uscita e senza nutrire il watchdog. Se l'SX1278 si impunta il nodo resta appeso dentro `setup()`, perde l'intero ciclo di misure e si riavvia dopo 180 s con `rst=6` | Trasmissione asincrona, fine rilevata interrogando `beginPacket()`, limite di guardia pari a tre volte il tempo di volo calcolato, e reset hardware della radio fra un tentativo e il successivo |
+| **Contatori di sequenza azzerati a ogni riavvio** | `g_seq` stava in `RTC_DATA_ATTR`, che il bootloader riazzera a ogni avvio diverso dal risveglio dal deep sleep. Un riavvio il cui pacchetto non arrivava al ponte diventava cosi' invisibile | Spostati in `RTC_NOINIT_ATTR`, azzerati solo quando manca la corrente: ora un buco nella numerazione e' la prova di un ciclo perso |
 
 ### Funzionalità nuove
 
@@ -552,6 +553,7 @@ Se `sensor.serra_riconnessioni_mqtt` continua a salire, e' quasi sempre questo.
 | Irrigazione mai eseguita | Guarda `sensor.serra_esito_irrigazione`: ti dice **il motivo** |
 | `ora_non_attendibile` | CR2032 del DS1307 scarica. Si corregge da sola al primo contatto col ponte |
 | `sensor.serra_motivo_ultimo_riavvio` a **6** | Watchdog: il ciclo di veglia si e' bloccato per oltre `WDT_SETUP_SEC` (180 s). Nello storico si riconosce da un buco di 900 + 181 s fra due pacchetti del nodo, con `sensor.serra_ora_del_nodo` che salta in avanti. Attenzione a non contare le ripubblicazioni MQTT del ponte: valgono come riavvii solo le righe in cui l'ora dichiarata dal nodo e' nuova |
+| Il nodo si riavvia e non si sa perche' | Guarda l'entita' **`tp`**: dice in che tappa del ciclo si era fermato l'ultima volta (`tx_stato` = trasmissione LoRa, `sd`/`sd_accoda`/`backlog` = microSD, `orologio`/`sensori` = bus I2C, `irrigazione` = valvola aperta). Compare solo nel pacchetto che segue un riavvio anomalo, insieme a `fw` e `rst` |
 | `terreno_umido` | Sta funzionando: il terreno è sopra soglia. Abbassa la soglia o mettila a −1 |
 | `nessun_flusso` | Serbatoio vuoto, pompa guasta, filtro otturato o flussometro scollegato. Se compare a ogni irrigazione ma l'acqua c'è, alza `FLUSSO_GRAZIA_SEC`: il tuo tubo impiega più di 5 s a riempirsi |
 | Comando premuto ma non succede nulla | Normale: viene eseguito al prossimo risveglio. Controlla `sensor.serra_comandi_in_coda` |

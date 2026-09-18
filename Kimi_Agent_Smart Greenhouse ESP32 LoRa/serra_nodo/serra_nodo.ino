@@ -43,6 +43,7 @@
 #include "config.h"
 #include "protocollo.h"
 #include "watchdog.h"
+#include "traccia.h"
 #include "impostazioni.h"
 #include "orologio.h"
 #include "sensori.h"
@@ -55,8 +56,20 @@
 //  Stato che sopravvive al deep sleep (RAM del dominio RTC)
 // ---------------------------------------------------------------------------
 
-RTC_DATA_ATTR uint32_t g_seq         = 0;   // contatore pacchetti
-RTC_DATA_ATTR uint32_t g_risvegli    = 0;   // risvegli dall'ultima accensione
+/*
+ * RTC_NOINIT_ATTR e non RTC_DATA_ATTR: le variabili con inizializzatore in
+ * memoria RTC vengono riazzerate dal bootloader a ogni avvio che non sia il
+ * risveglio dal deep sleep, quindi un riavvio da watchdog faceva ripartire la
+ * numerazione da capo. Il risultato era che un riavvio il cui pacchetto non
+ * arrivava al ponte diventava invisibile: succedeva davvero, e si e' capito
+ * solo notando un numero di sequenza troppo basso. Con la numerazione continua
+ * un buco nella sequenza e' la prova che un ciclo e' andato perso.
+ *
+ * Il prezzo e' che all'accensione contengono spazzatura: le azzera setup()
+ * quando tracciaMemoriaPersa() dice che la memoria RTC non e' attendibile.
+ */
+RTC_NOINIT_ATTR uint32_t g_seq;             // contatore pacchetti
+RTC_NOINIT_ATTR uint32_t g_risvegli;        // risvegli dall'ultima mancanza di corrente
 
 // ---------------------------------------------------------------------------
 //  Stato del ciclo corrente
@@ -189,6 +202,7 @@ static void gestisciComandi(RispostaAck& ack) {
     PacchettoKV extra;
     extra.reset();
 
+    traccia(TAPPA_COMANDO);
     DateTime adesso = orologioAdesso();
     EsitoComando es = comandoEsegui(cmd, adesso, extra);
     eseguiti++;
@@ -228,12 +242,14 @@ static void gestisciComandi(RispostaAck& ack) {
     }
     aggiungiStato(res);
 
+    traccia(TAPPA_TX_ESITO);
     RispostaAck ackRes;
     bool consegnato = inviaPacchetto(res, ackRes);
 
     if (!consegnato) {
       // L'esito non e' arrivato: lo si accoda come qualunque altro dato.
       // Home Assistant lo vedra' al prossimo aggancio del link.
+      traccia(TAPPA_SD_ACCODA);
       char buf[PROTO_MAX_PAYLOAD + 8];
       res.serializza(NODE_ID, buf, sizeof(buf));
       backlogAccoda(buf);
@@ -300,6 +316,9 @@ static bool consegnaRecordStorico(const char* riga) {
 // ===========================================================================
 
 static void vaiInDeepSleep() {
+  // Ultima tappa: al risveglio successivo dira' che il ciclo era finito bene.
+  traccia(TAPPA_SLEEP);
+
   uint32_t sleepSec = g_cfg.sleepSec;
 
   // Allineamento all'intervallo: con l'ora esatta i risvegli cadono sempre
@@ -355,6 +374,12 @@ void setup() {
   delay(100);
 
   esp_reset_reason_t motivo = esp_reset_reason();
+
+  // Scatola nera: va letta prima di qualunque altra cosa, perche' da qui
+  // in avanti ogni tappa la sovrascrive.
+  tracciaInit();
+  const Tappa tappaPrec = tracciaPrecedente();
+  if (tracciaMemoriaPersa()) { g_seq = 0; g_risvegli = 0; }
   g_risvegli++;
 
   Serial.println();
@@ -362,6 +387,8 @@ void setup() {
   Serial.printf ("  NODO SERRA %s - firmware %s\n", NODE_ID, FW_VERSION);
   Serial.printf ("  Reset: %s | risveglio #%lu | seq %lu\n",
                  wdtMotivoReset(motivo), (unsigned long)g_risvegli, (unsigned long)g_seq);
+  if (motivo != ESP_RST_DEEPSLEEP && tappaPrec != TAPPA_IGNOTA)
+    Serial.printf ("  Il ciclo precedente si era fermato a: %s\n", tracciaTesto(tappaPrec));
   Serial.println(F("============================================================"));
 
   // (2) Watchdog globale: senza, un blocco in SD.begin(), LoRa.begin() o sul
@@ -378,10 +405,12 @@ void setup() {
   Serial.println(F("============================================================"));
 
   // (3) Impostazioni persistenti
+  traccia(TAPPA_IMPOSTAZIONI);
   impostazioniCarica();
   impostazioniStampa();
 
   // (4) Orologio
+  traccia(TAPPA_OROLOGIO);
   Wire.begin(I2C_SDA, I2C_SCL);
   orologioInit();
   DateTime adesso = orologioAdesso();   // UTC: e' l'ora dei timestamp e dei
@@ -393,7 +422,10 @@ void setup() {
     impostazioniNuovoGiorno(orologioGiorno(orologioLocale()));
 
   // Periferiche
+  traccia(TAPPA_SENSORI);
   sensoriInit();
+
+  traccia(TAPPA_SD);
   backlogInit();
 
   /*
@@ -402,13 +434,16 @@ void setup() {
    * Assistant, perche' e' il genere di evento che si capisce solo rileggendo
    * la sequenza di quello che e' successo intorno.
    */
+  traccia(TAPPA_RECUPERO);
   g_irrigazioneDaRiferire = irrigazioneRecuperaInterrotta();
 
+  traccia(TAPPA_RADIO);
   bool radioOk = radioInit();
 
   // (5) Umidita' del terreno PRIMA di decidere: e' la lettura che determina
   //     se serve irrigare. (Nel pacchetto viaggera' poi la lettura successiva
   //     all'irrigazione, utile per verificare che l'acqua sia arrivata.)
+  traccia(TAPPA_SOIL);
   float soilMin = sensoriSoilMin();
 
   // (6) Irrigazione automatica
@@ -418,6 +453,7 @@ void setup() {
   g_esitoIrrig = irrigazioneValuta(orologioLocale(), orologioAttendibile(), soilMin);
 
   if (g_esitoIrrig == IRR_OK) {
+    traccia(TAPPA_IRRIGAZIONE);
     g_esitoIrrig = irrigazioneEsegui(g_cfg.irrigDurataSec, 0.0f, adesso.unixtime(),
                                      /*programmata=*/true);
   } else {
@@ -425,6 +461,7 @@ void setup() {
   }
 
   // (7) Lettura di tutti i sensori abilitati
+  traccia(TAPPA_LETTURE);
   PacchettoKV pkt;
   intestazione(pkt, orologioAdesso());
   sensoriLeggiTutti(pkt);
@@ -434,9 +471,19 @@ void setup() {
   if (motivo != ESP_RST_DEEPSLEEP) {
     pkt.aggiungi ("fw",  FW_VERSION);
     pkt.aggiungiU("rst", (uint32_t)motivo);
+
+    /*
+     * In che punto del ciclo si era fermato il nodo prima di riavviarsi.
+     * Senza questo campo un riavvio da watchdog dice solo CHE si e'
+     * bloccato, mai DOVE: la differenza fra sapere e tirare a indovinare
+     * fra trasmissione LoRa, microSD e bus I2C.
+     */
+    if (tappaPrec != TAPPA_IGNOTA)
+      pkt.aggiungi("tp", tracciaTesto(tappaPrec));
   }
 
   // (8) Trasmissione + comandi
+  traccia(TAPPA_TX_STATO);
   RispostaAck ack;
   if (radioOk) {
     g_linkOk = inviaPacchetto(pkt, ack);
@@ -449,6 +496,7 @@ void setup() {
 
   // Pacchetto non consegnato: finisce nel backlog e verra' ritrasmesso.
   if (!g_linkOk) {
+    traccia(TAPPA_SD_ACCODA);
     char buf[PROTO_MAX_PAYLOAD + 8];
     pkt.serializza(NODE_ID, buf, sizeof(buf));
     backlogAccoda(buf);
@@ -458,6 +506,7 @@ void setup() {
   // (9) Svuotamento del backlog: solo se il link e' vivo, altrimenti si
   //     sprecherebbe batteria per tentativi destinati a fallire.
   if (g_linkOk) {
+    traccia(TAPPA_BACKLOG);
     uint32_t inCoda = backlogConta();
     if (inCoda > 0) {
       Serial.printf("[BACKLOG] %lu record da consegnare.\n", (unsigned long)inCoda);
@@ -466,7 +515,10 @@ void setup() {
   }
 
   // Finestra di manutenzione, se richiesta con il comando WAKE
-  if (g_wakeExtraSec > 0) finestraManutenzione(g_wakeExtraSec);
+  if (g_wakeExtraSec > 0) {
+    traccia(TAPPA_MANUTENZIONE);
+    finestraManutenzione(g_wakeExtraSec);
+  }
 
   // (10) Buonanotte
   vaiInDeepSleep();

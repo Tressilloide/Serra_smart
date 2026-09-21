@@ -77,6 +77,23 @@ static uint32_t comandiConsegnati   = 0;
 static int      ultimoRssi          = 0;
 static float    ultimoSnr           = 0.0f;
 
+/*
+ * Perche' e' caduta l'ultima connessione MQTT, e con che segnale WiFi.
+ *
+ * Finora si sapeva solo QUANTE volte era caduta. Il log del broker diceva
+ * sempre "exceeded timeout", cioe' "non ho piu' ricevuto niente da te", e
+ * da li' non si poteva distinguere fra due cose molto diverse: il ponte che
+ * smette di trasmettere, e il ponte che trasmette senza che arrivi.
+ *
+ * mqtt.state() letto NEL MOMENTO in cui ci si accorge della caduta separa i
+ * due casi: -4 (timeout) significa che e' stato il ponte a chiudere perche'
+ * il suo ping non ha avuto risposta, -3 (lost) che se l'e' vista chiudere
+ * sotto. Il RSSI dello stesso istante dice se quando succede il segnale era
+ * gia' in difficolta'.
+ */
+static int      statoUltimaCaduta   = 0;
+static int      rssiUltimaCaduta    = 0;
+
 // Anti-duplicati: il nodo ritrasmette se l'ACK si perde, e senza questo
 // controllo il dato finirebbe due volte nello storico e nel totale dell'acqua.
 struct ChiaveDedup { uint32_t seq; uint32_t ts; };
@@ -282,7 +299,23 @@ static void mqttCallback(char* topic, byte* payload, unsigned int len) {
 
 static void mqttMantieni() {
   if (WiFi.status() != WL_CONNECTED) return;
-  if (mqtt.connected()) return;
+
+  static bool eraConnesso = false;
+  if (mqtt.connected()) { eraConnesso = true; return; }
+
+  // Passaggio da connesso a caduto: e' l'unico istante in cui mqtt.state()
+  // contiene ancora il motivo, prima che il tentativo di riconnessione lo
+  // sovrascriva con il proprio esito.
+  if (eraConnesso) {
+    eraConnesso       = false;
+    statoUltimaCaduta = mqtt.state();
+    rssiUltimaCaduta  = WiFi.RSSI();
+    Serial.printf("[MQTT] Connessione caduta (stato=%d, RSSI %d dBm, "
+                  "uptime %lu s).\n",
+                  statoUltimaCaduta, rssiUltimaCaduta,
+                  (unsigned long)(millis() / 1000UL));
+  }
+
   if (millis() - ultimoTentativoMqtt < MQTT_RETRY_MS) return;
   ultimoTentativoMqtt = millis();
 
@@ -303,6 +336,26 @@ static void mqttMantieni() {
     Serial.printf("OK! (riconnessioni finora: %lu, uptime %lu s)\n",
                   (unsigned long)riconnessioniMqtt,
                   (unsigned long)(millis() / 1000UL));
+
+    /*
+     * Algoritmo di Nagle disattivato, e va rifatto a OGNI connessione
+     * perche' il socket e' nuovo ogni volta.
+     *
+     * Nagle trattiene i pacchetti piccoli finche' i dati precedenti non
+     * sono stati confermati, per non sprecare rete con tanti invii minuscoli.
+     * Il PINGREQ di MQTT e' lungo DUE byte, ed e' esattamente il pacchetto
+     * che Nagle ama trattenere. Se la conferma TCP di una pubblicazione
+     * tarda -- e con il WiFi tarda spesso, perche' anche dall'altra parte
+     * c'e' un ritardo volontario sulle conferme -- il ping resta fermo nel
+     * buffer di uscita. Il broker non riceve piu' niente, e dopo una volta e
+     * mezza il keepalive chiude la sessione: nel suo log si legge
+     * "exceeded timeout", che sembra un ponte morto e invece e' un ponte
+     * vivissimo con due byte in ostaggio.
+     *
+     * Qui non c'e' niente da risparmiare: i messaggi sono pochi e radi.
+     */
+    espClient.setNoDelay(true);
+
     mqtt.publish(TOPIC_PONTE, "online", true);
     mqtt.subscribe(TOPIC_CMD_SUB, 1);
     // Subito dopo la sottoscrizione il broker riversa i messaggi ritenuti:
@@ -445,6 +498,62 @@ static size_t costruisciJson(const PacchettoKV& pkt, char* out, size_t maxOut,
  *   - porta l'eventuale comando da eseguire
  * Tutto questo senza un solo pacchetto in piu' rispetto a prima.
  */
+/*
+ * Tempo di volo di un pacchetto, in millisecondi. Formula del datasheet
+ * SX1276/78 paragrafo 4.1.1.7: header esplicito, CRC attivo, low data rate
+ * optimization spenta. LORA_CR vale gia' 5, cioe' e' il (CR + 4) della
+ * formula. Gemella di quella in serra_nodo/radio.cpp, verificata da
+ * tools/test_tempo_volo.py.
+ */
+static uint32_t tempoDiVoloMs(size_t lunghezza) {
+  const float tSimbolo = (float)(1UL << LORA_SF) / (float)LORA_BW;   // secondi
+
+  int32_t numeratore   = 8 * (int32_t)lunghezza - 4 * LORA_SF + 28 + 16;
+  int32_t denominatore = 4 * LORA_SF;
+  int32_t simboli = 8;
+  if (numeratore > 0)
+    simboli += ((numeratore + denominatore - 1) / denominatore) * LORA_CR;
+
+  const float preambolo = (8.0f + 4.25f) * tSimbolo;
+  return (uint32_t)((preambolo + simboli * tSimbolo) * 1000.0f) + 1;
+}
+
+/*
+ * Trasmette e torna in ascolto, senza attese illimitate.
+ *
+ * La versione sincrona di LoRa.endPacket() e' un ciclo che aspetta il flag
+ * di TxDone senza timeout e senza nutrire il watchdog: sul nodo si e'
+ * impiantata piu' volte. Qui si parte in modo asincrono e si chiede a
+ * beginPacket() quando il modulo e' di nuovo libero -- risponde 0 finche'
+ * trasmette, 1 quando ha finito -- perche' isTransmitting() nella libreria
+ * 0.8.0 e' privata. Gli effetti collaterali della chiamata che riesce
+ * (standby e puntatori del FIFO azzerati) sono innocui: subito dopo si
+ * passa comunque in ricezione.
+ */
+static void trasmettiAck(const char* pacchetto) {
+  LoRa.idle();
+  LoRa.beginPacket();
+  LoRa.print(pacchetto);
+  LoRa.endPacket(true);           // asincrona: scrive un registro e torna
+
+  const uint32_t limite = tempoDiVoloMs(strlen(pacchetto)) * (uint32_t)TX_GUARDIA_X
+                        + (uint32_t)TX_GUARDIA_MS;
+  const uint32_t t0     = millis();
+  bool           finita = false;
+
+  while (millis() - t0 < limite) {
+    esp_task_wdt_reset();
+    if (LoRa.beginPacket() == 1) { finita = true; break; }
+    delay(1);
+  }
+
+  if (!finita)
+    Serial.printf("[LoRa] ACK non concluso in %lu ms: il modulo non risponde.\n",
+                  (unsigned long)limite);
+
+  LoRa.receive();                 // subito di nuovo in ascolto
+}
+
 static void inviaAck(uint32_t seq, bool allegaComando) {
   char ack[PROTO_MAX_PAYLOAD + 1];
 
@@ -480,11 +589,7 @@ static void inviaAck(uint32_t seq, bool allegaComando) {
     }
   }
 
-  LoRa.idle();
-  LoRa.beginPacket();
-  LoRa.print(ack);
-  LoRa.endPacket();
-  LoRa.receive();                 // subito di nuovo in ascolto
+  trasmettiAck(ack);
 
   Serial.printf("[LoRa] ACK -> %s\n", ack);
 }
@@ -611,6 +716,7 @@ static void pubblicaDiagnostica() {
     "\"coda\":%u,\"wifi_rssi\":%d,\"heap\":%lu,"
     "\"heap_blocco\":%lu,\"heap_minimo\":%lu,"
     "\"lora_rssi\":%d,\"lora_snr\":%.1f,"
+    "\"mqtt_caduta\":%d,\"rssi_caduta\":%d,"
     "\"ip\":\"%s\",\"fw\":\"%s\"}",
     (unsigned long)(millis() / 1000UL),
     (unsigned long)pacchettiRicevuti, (unsigned long)pacchettiScartati,
@@ -637,6 +743,7 @@ static void pubblicaDiagnostica() {
     (unsigned long)ESP.getMaxAllocHeap(),
     (unsigned long)ESP.getMinFreeHeap(),
     ultimoRssi, ultimoSnr,
+    statoUltimaCaduta, rssiUltimaCaduta,
     WiFi.localIP().toString().c_str(), FW_VERSION_PONTE);
 
   mqtt.publish(TOPIC_DIAG, (const uint8_t*)payload, strlen(payload), true);

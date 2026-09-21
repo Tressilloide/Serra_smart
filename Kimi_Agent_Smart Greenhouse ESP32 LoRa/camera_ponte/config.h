@@ -10,7 +10,7 @@
 
 #pragma once
 
-#define FW_VERSION_PONTE "2.2.0"
+#define FW_VERSION_PONTE "2.3.0"
 
 // ======================= RADIO LoRa =========================================
 // DEVONO coincidere esattamente con serra_nodo/config.h, altrimenti i due
@@ -20,6 +20,22 @@
 #define LORA_SF     7
 #define LORA_BW     125E3
 #define LORA_CR     5
+
+/*
+ * Guardia sulla trasmissione dell'ACK, come sul nodo.
+ *
+ * LoRa.endPacket() attende il flag di TxDone con un ciclo che non ha ne'
+ * timeout ne' un modo di nutrire il watchdog. Sul nodo quel ciclo si e'
+ * davvero impiantato, piu' volte. Qui il danno sarebbe anche peggiore: il
+ * ponte e' l'unico che ascolta, e mentre e' appeso non riceve nulla da
+ * nessuno finche' il watchdog non lo riavvia trenta secondi dopo.
+ *
+ * L'attesa viene limitata a tre volte il tempo di volo calcolato: un ACK
+ * di una sessantina di byte vola in 113 ms, quindi la guardia scatta a
+ * 439 ms. Nessuna trasmissione onesta ci arriva nemmeno vicino.
+ */
+#define TX_GUARDIA_X     3        // Fattore di guardia sul tempo di volo
+#define TX_GUARDIA_MS    100      // ...piu' questo margine fisso
 #define LORA_TX_POWER 17
 
 // ======================= MQTT ===============================================

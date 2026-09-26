@@ -3,8 +3,10 @@
  *  SERRA SMART — PROTOCOLLO LoRa v2  (file CONDIVISO)
  * ============================================================================
  *
- *  >>> QUESTO FILE DEVE ESSERE IDENTICO IN serra_nodo/ E IN camera_ponte/ <<<
- *      Se lo modifichi, ricopialo nell'altra cartella e riflasha entrambi.
+ *  >>> QUESTO FILE DEVE ESSERE IDENTICO IN serra_nodo/, camera_ponte/ E <<<
+ *  >>> test_protocollo/                                                  <<<
+ *      Se lo modifichi, ricopialo nelle altre due cartelle e riflasha nodo e
+ *      ponte.
  *
  *  ---------------------------------------------------------------------------
  *  PERCHE' chiave=valore e non piu' CSV posizionale
@@ -34,12 +36,17 @@
  *  Esito di un comando (nodo -> ponte): e' un normale pacchetto dati con in piu'
  *      ...;res=7;rc=0
  *
+ *  Record arretrato, cioe' uscito dal backlog del nodo (dal firmware 2.5.0):
+ *      GH1;bk=1;v=2;s=41;t=1755499500;...
+ *  Il ponte lo pubblica su serra/nodo/storico e mai sullo stato attuale.
+ *
  *  Chiavi riservate al trasporto:
  *      v    versione protocollo        s    numero di sequenza
  *      t    timestamp Unix del dato    now  ora corrente secondo il ponte (NTP)
  *      c    id del comando             o    opcode del comando
  *      a    argomenti del comando      res  id del comando eseguito
  *      rc   esito (0 = OK)             h    tag di autenticazione (riservato)
+ *      tz   scarto del fuso (ACK)      bk   record arretrato dal backlog
  *  Tutte le altre chiavi sono letture di sensori e viaggiano fino a HA intatte.
  *
  *  ---------------------------------------------------------------------------

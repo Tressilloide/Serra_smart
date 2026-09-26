@@ -3,16 +3,17 @@
  *  SERRA SMART — PONTE LoRa <-> WiFi/MQTT  (ESP32 in camera)
  * ============================================================================
  *
- *  Firmware 2.0 — vedi docs/Guida_Serra_Smart.md e docs/PROTOCOLLO.md
+ *  Versione in config.h (FW_VERSION_PONTE) — vedi docs/Guida_Serra_Smart.md
+ *  e docs/PROTOCOLLO.md
  *
  *  ---------------------------------------------------------------------------
  *  COMPITI
  *  ---------------------------------------------------------------------------
  *   - Restare SEMPRE in ascolto LoRa: il nodo trasmette per pochi secondi ogni
  *     15 minuti, non possiamo permetterci di perdere quella finestra
- *   - Pubblicare ogni pacchetto su MQTT e rispondere con un ACK SOLO se la
- *     pubblicazione e' riuscita, cosi' un dato non confermato resta al sicuro
- *     sulla microSD della serra
+ *   - Pubblicare ogni pacchetto su MQTT e rispondere con un ACK SOLO quando il
+ *     broker ha confermato di averlo ricevuto (eco di conferma), cosi' un dato
+ *     non arrivato resta al sicuro sulla microSD della serra
  *   - Consegnare al nodo i comandi che Home Assistant ha messo in coda,
  *     agganciandoli all'ACK: e' l'unico momento in cui la serra ascolta
  *   - Allegare a ogni ACK l'ora NTP, cosi' il DS1307 della serra si
@@ -99,6 +100,34 @@ static int      rssiUltimaCaduta    = 0;
 struct ChiaveDedup { uint32_t seq; uint32_t ts; };
 static ChiaveDedup dedup[DEDUP_MEMORIA];
 static uint8_t     dedupIdx = 0;
+
+// Eco di conferma (vedi confermaDalBroker()). Il gettone atteso cambia a ogni
+// pacchetto, cosi' un'eco in ritardo di un giro precedente non conferma
+// quello attuale.
+static char     ecoAtteso[24]  = "";
+static bool     ecoTornato     = false;
+static uint32_t ecoMancate     = 0;    // pacchetti rimasti senza ACK per eco mancata
+static uint32_t ultimaEcoMs    = 0;    // tempo di andata e ritorno dell'ultima eco
+
+// Timestamp dell'ultimo pacchetto FRESCO confermato dal broker (0 = nessuno
+// dall'avvio). Vedi STORICO_MARGINE_SEC in config.h.
+static uint32_t ultimoTsFresco = 0;
+
+/*
+ * L'ultimo comando consegnato dentro un ACK, con il pacchetto a cui era
+ * allegato.
+ *
+ * Il comando esce dalla coda quando parte l'ACK. Se il nodo quell'ACK non lo
+ * sente, ritrasmette lo stesso pacchetto: prima gli si rispondeva con un ACK
+ * nudo, e il comando era perso senza che nessuno lo eseguisse. Ora, per quella
+ * sola ritrasmissione, gli si riallega lo stesso comando. Resta "al massimo
+ * una volta": il nodo elabora un solo ACK per ogni numero di sequenza.
+ */
+static bool          ackCmdValido = false;
+static uint32_t      ackCmdSeq    = 0;
+static uint32_t      ackCmdTs     = 0;
+static uint32_t      ackCmdMs     = 0;
+static ComandoInCoda ackCmd;
 
 // ============================ WATCHDOG ======================================
 
@@ -294,6 +323,13 @@ static int32_t offsetFuso() {
 // ============================ MQTT ==========================================
 
 static void mqttCallback(char* topic, byte* payload, unsigned int len) {
+  // L'eco non e' un comando: va riconosciuta prima di tutto il resto.
+  if (strcmp(topic, TOPIC_ECO) == 0) {
+    size_t atteso = strlen(ecoAtteso);
+    if (atteso > 0 && len == atteso && memcmp(payload, ecoAtteso, len) == 0)
+      ecoTornato = true;
+    return;
+  }
   codaMessaggioMqtt(topic, payload, len);
 }
 
@@ -357,6 +393,9 @@ static void mqttMantieni() {
     espClient.setNoDelay(true);
 
     mqtt.publish(TOPIC_PONTE, "online", true);
+    // Sessione pulita: le sottoscrizioni vanno rifatte a ogni connessione,
+    // compresa quella dell'eco, senza la quale nessun ACK partirebbe piu'.
+    mqtt.subscribe(TOPIC_ECO, 0);
     mqtt.subscribe(TOPIC_CMD_SUB, 1);
     // Subito dopo la sottoscrizione il broker riversa i messaggi ritenuti:
     // i comandi di azione che arrivano adesso sono residui, non richieste.
@@ -396,6 +435,47 @@ static void mqttMantieni() {
     Serial.printf("fallita (rc=%d), riprovo tra %lu s.\n",
                   mqtt.state(), MQTT_RETRY_MS / 1000UL);
   }
+}
+
+/*
+ * Conferma che il broker ha davvero ricevuto quello che gli abbiamo appena
+ * pubblicato.
+ *
+ * mqtt.publish() con QoS 0 restituisce true appena i byte entrano nel buffer
+ * TCP dell'ESP32, non quando arrivano al broker. Se in quel momento il
+ * collegamento e' in stallo -- e succede 14-22 volte al giorno -- il ponte
+ * mandava lo stesso l'ACK, il nodo cancellava il dato, e il broker poco dopo
+ * chiudeva la sessione con i byte ancora in viaggio. Dal 13/09, 12 cicli persi
+ * su 15 sono caduti esattamente dentro uno di questi stalli, e nessuno era
+ * finito nel backlog perche' il nodo l'ACK l'aveva ricevuto.
+ *
+ * Il rimedio e' un'eco: dopo i dati si pubblica un gettone su un topic a cui
+ * il ponte stesso e' iscritto, e si aspetta di vederlo tornare. Viaggia sulla
+ * stessa connessione TCP DOPO i dati, e il broker elabora i messaggi di un
+ * client nell'ordine in cui arrivano: se ha rimandato indietro l'eco, i dati
+ * li ha gia' ricevuti e consegnati. Se l'eco non torna entro ECO_TIMEOUT_MS
+ * niente ACK: il nodo ritrasmette o mette il pacchetto nel backlog.
+ *
+ * Non serve cambiare libreria ne' passare a QoS 1, che PubSubClient in
+ * pubblicazione non supporta.
+ */
+static bool confermaDalBroker(uint32_t seq) {
+  snprintf(ecoAtteso, sizeof(ecoAtteso), "%lu-%lu",
+           (unsigned long)seq, (unsigned long)millis());
+  ecoTornato = false;
+
+  if (!mqtt.publish(TOPIC_ECO, ecoAtteso)) return false;
+
+  const uint32_t t0 = millis();
+  while (!ecoTornato && millis() - t0 < ECO_TIMEOUT_MS) {
+    esp_task_wdt_reset();
+    if (!mqtt.loop()) break;      // la connessione e' caduta mentre aspettavamo
+    delay(1);
+  }
+
+  if (ecoTornato) ultimaEcoMs = millis() - t0;
+  ecoAtteso[0] = '\0';            // un'eco che arriva dopo non conferma nulla
+  return ecoTornato;
 }
 
 // ============================ DEDUP =========================================
@@ -554,7 +634,14 @@ static void trasmettiAck(const char* pacchetto) {
   LoRa.receive();                 // subito di nuovo in ascolto
 }
 
-static void inviaAck(uint32_t seq, bool allegaComando) {
+/*
+ * seq, ts       : identificano il pacchetto confermato
+ * allegaComando : si puo' estrarre un comando nuovo dalla coda
+ * ripeti        : comando gia' consegnato da riallegare (ritrasmissione dello
+ *                 stesso pacchetto), oppure nullptr
+ */
+static void inviaAck(uint32_t seq, uint32_t ts, bool allegaComando,
+                     const ComandoInCoda* ripeti = nullptr) {
   char ack[PROTO_MAX_PAYLOAD + 1];
 
   /*
@@ -581,11 +668,20 @@ static void inviaAck(uint32_t seq, bool allegaComando) {
     accoda(";tz=%ld",  (long)offsetFuso());
   }
 
-  if (allegaComando && !codaVuota()) {
+  if (ripeti) {
+    accoda(";c=%lu;o=%s;a=%s", (unsigned long)ripeti->id, ripeti->opcode, ripeti->args);
+    Serial.printf("[CMD] Riallego id=%lu %s: l'ACK che lo portava non era arrivato.\n",
+                  (unsigned long)ripeti->id, ripeti->opcode);
+  } else if (allegaComando && !codaVuota()) {
     ComandoInCoda cmd;
     if (codaEstrai(cmd)) {
       accoda(";c=%lu;o=%s;a=%s", (unsigned long)cmd.id, cmd.opcode, cmd.args);
       comandiConsegnati++;
+      ackCmd       = cmd;
+      ackCmdValido = true;
+      ackCmdSeq    = seq;
+      ackCmdTs     = ts;
+      ackCmdMs     = millis();
     }
   }
 
@@ -630,9 +726,13 @@ static void gestisciLoRa() {
   uint32_t ts  = pkt.valoreU("t", 0);
 
   // --- Duplicato? Si conferma comunque, ma non si ripubblica ---------------
+  // Il dato e' gia' arrivato al broker (ricorda() scatta solo dopo l'eco):
+  // si e' perso l'ACK. Se quell'ACK portava un comando, glielo si riallega.
   if (giaVisto(seq, ts)) {
     Serial.println(F("[LoRa] Duplicato (ACK perso in precedenza): confermo senza ripubblicare."));
-    inviaAck(seq, false);
+    bool stessoPacchetto = ackCmdValido && seq == ackCmdSeq && ts == ackCmdTs &&
+                           (millis() - ackCmdMs) < ACK_RIPETIBILE_MS;
+    inviaAck(seq, ts, false, stessoPacchetto ? &ackCmd : nullptr);
     return;
   }
 
@@ -640,11 +740,17 @@ static void gestisciLoRa() {
   // Un record ripescato dal backlog non deve finire su serra/nodo/stato:
   // il nodo trasmette prima il pacchetto attuale e poi la coda arretrata,
   // quindi Home Assistant finirebbe per mostrare come "valore corrente" una
-  // lettura di ore prima. ts == 0 significa che il nodo non conosce ancora
-  // l'ora: e' un pacchetto fresco, e anzi ha bisogno del "now" nell'ACK.
+  // lettura vecchia. Dal firmware 2.5.0 il nodo marca quei record con bk=1;
+  // per quelli dei firmware precedenti valgono l'eta' e il confronto con
+  // l'ultimo pacchetto fresco (vedi config.h).
+  // ts == 0 significa che il nodo non conosce ancora l'ora: e' un pacchetto
+  // fresco, e anzi ha bisogno del "now" nell'ACK.
   uint32_t adesso = oraCorrente();
-  bool storico = (ts > 0) && (adesso > 0) && (adesso > ts) &&
-                 ((adesso - ts) > SOGLIA_STORICO_SEC);
+  bool storico = pkt.ha("bk") ||
+                 ((ts > 0) && (adesso > 0) && (adesso > ts) &&
+                  ((adesso - ts) > SOGLIA_STORICO_SEC)) ||
+                 ((ts > 0) && (ultimoTsFresco > 0) &&
+                  (ts + STORICO_MARGINE_SEC < ultimoTsFresco));
 
   const char* topic = storico ? TOPIC_STORICO : TOPIC_STATO;
 
@@ -671,9 +777,41 @@ static void gestisciLoRa() {
     return;
   }
 
+  // --- Esito di un comando eseguito dal nodo -------------------------------
+  // Prima dell'eco, cosi' l'eco conferma anche lui.
+  if (pkt.ha("res")) {
+    const char* det = pkt.valore("det");
+    codaPubblicaEsito(pkt.valoreU("res", 0), pkt.valoreU("rc", 0), det ? det : "");
+  }
+
+  // --- Il broker ha ricevuto davvero? --------------------------------------
+  if (!confermaDalBroker(seq)) {
+    ecoMancate++;
+    Serial.printf("[MQTT] Eco non tornata entro %lu ms: NIENTE ACK, il nodo "
+                  "ritrasmettera' o terra' il dato su SD (eco mancate: %lu).\n",
+                  (unsigned long)ECO_TIMEOUT_MS, (unsigned long)ecoMancate);
+    return;
+  }
+
+  // Solo adesso il pacchetto e' consegnato: una sua ritrasmissione e' un
+  // duplicato da non ripubblicare.
   ricorda(seq, ts);
 
+  // Riferimento per riconoscere i record arretrati che seguiranno, solo se
+  // il timestamp e' credibile rispetto all'ora NTP del ponte.
+  if (!storico && ts > ultimoTsFresco && adesso > 0 &&
+      (ts > adesso ? ts - adesso : adesso - ts) <= STORICO_PLAUSIBILE_SEC)
+    ultimoTsFresco = ts;
+
+  // --- ACK, con eventuale comando ------------------------------------------
+  // Ai record storici NON si allegano comandi: il nodo li invia con una
+  // funzione che non li interpreta, quindi il comando andrebbe perso.
+  inviaAck(seq, ts, !storico);
+
   // --- Discovery: crea le entita' mancanti, anche per chiavi sconosciute ---
+  // DOPO l'ACK: al primo pacchetto dopo l'avvio sono una decina di messaggi
+  // da ~400 byte, e fatti prima avrebbero ritardato sia l'eco sia l'ACK
+  // mentre il nodo aspetta, con la radio accesa, per al massimo 2 s.
   for (uint8_t i = 0; i < pkt.n(); i++)
     discoveryAssicuraSensore(pkt.campo(i).chiave);
 
@@ -686,17 +824,6 @@ static void gestisciLoRa() {
    */
   discoveryAssicuraSensore("rssi");
   discoveryAssicuraSensore("snr");
-
-  // --- Esito di un comando eseguito dal nodo -------------------------------
-  if (pkt.ha("res")) {
-    const char* det = pkt.valore("det");
-    codaPubblicaEsito(pkt.valoreU("res", 0), pkt.valoreU("rc", 0), det ? det : "");
-  }
-
-  // --- ACK, con eventuale comando ------------------------------------------
-  // Ai record storici NON si allegano comandi: il nodo li invia con una
-  // funzione che non li interpreta, quindi il comando andrebbe perso.
-  inviaAck(seq, !storico);
 }
 
 // ============================ DIAGNOSTICA ===================================
@@ -706,9 +833,10 @@ static void pubblicaDiagnostica() {
   if (millis() - ultimaDiagnostica < DIAG_INTERVALLO_MS) return;
   ultimaDiagnostica = millis();
 
-  // 448 e non 320: con tutti i contatori ai valori massimi il JSON arriva a
-  // 284 byte, e 36 byte di margine sono troppo pochi per aggiungerci un altro
-  // campo domani senza accorgersi del troncamento.
+  // 448 byte: con eco_ko ed eco_ms, e ogni campo alla sua lunghezza massima
+  // teorica (contatori a 4294967295, interi con segno a -2147483648), il JSON
+  // arriva a 423. Chi aggiunge un campo deve rifare il conto: snprintf
+  // troncherebbe la graffa finale e Home Assistant scarterebbe tutto.
   char payload[448];
   snprintf(payload, sizeof(payload),
     "{\"uptime\":%lu,\"pkt\":%lu,\"scartati\":%lu,\"cmd_consegnati\":%lu,"
@@ -717,6 +845,7 @@ static void pubblicaDiagnostica() {
     "\"heap_blocco\":%lu,\"heap_minimo\":%lu,"
     "\"lora_rssi\":%d,\"lora_snr\":%.1f,"
     "\"mqtt_caduta\":%d,\"rssi_caduta\":%d,"
+    "\"eco_ko\":%lu,\"eco_ms\":%lu,"
     "\"ip\":\"%s\",\"fw\":\"%s\"}",
     (unsigned long)(millis() / 1000UL),
     (unsigned long)pacchettiRicevuti, (unsigned long)pacchettiScartati,
@@ -744,6 +873,10 @@ static void pubblicaDiagnostica() {
     (unsigned long)ESP.getMinFreeHeap(),
     ultimoRssi, ultimoSnr,
     statoUltimaCaduta, rssiUltimaCaduta,
+    // eco_ko: pacchetti del nodo rimasti senza ACK perche' il broker non ha
+    // confermato in tempo. La 2.3.0 li avrebbe confermati al buio, senza
+    // sapere se arrivavano: ora il nodo li ritrasmette o li tiene su SD.
+    (unsigned long)ecoMancate, (unsigned long)ultimaEcoMs,
     WiFi.localIP().toString().c_str(), FW_VERSION_PONTE);
 
   mqtt.publish(TOPIC_DIAG, (const uint8_t*)payload, strlen(payload), true);
@@ -786,7 +919,7 @@ void setup() {
   // Deve contenere il piu' grande fra: payload di discovery (~400 byte) e
    // JSON di stato (fino a 900), piu' topic e intestazione MQTT.
   mqtt.setBufferSize(1536);
-  mqtt.setKeepAlive(30);
+  mqtt.setKeepAlive(MQTT_KEEPALIVE_SEC);   // perche' 60 s: vedi config.h
   mqtt.setSocketTimeout(5);
 
   discoveryInit(&mqtt);

@@ -2,7 +2,7 @@
 
 Specifica del dialogo tra il **nodo serra** e il **ponte in camera**.
 Il file di riferimento è [`protocollo.h`](../serra_nodo/protocollo.h), che deve
-essere **identico** nelle due cartelle degli sketch.
+essere **identico** in `serra_nodo/`, `camera_ponte/` e `test_protocollo/`.
 
 ---
 
@@ -59,6 +59,26 @@ GH1;v=2;s=<seq>;t=<epoch>;<chiave>=<valore>;...
 | `t` | Timestamp Unix del dato. **`0` = il nodo non conosce l'ora** |
 | altre | Letture dei sensori e stato, vedi §3 |
 
+Un pacchetto rimasto senza ACK finisce nel backlog su microSD, e quando viene
+ritrasmesso porta in testa il marcatore `bk=1` (dal firmware del nodo 2.5.0):
+
+```
+GH1;bk=1;v=2;s=<seq>;t=<epoch>;<chiave>=<valore>;...
+```
+
+È così che il ponte lo pubblica su `serra/nodo/storico` e mai sullo stato
+attuale. Prima il ponte lo capiva solo dall'età del record, oltre 40 minuti:
+un record accodato nel ciclo precedente, vecchio di 15, passava per fresco e
+sovrascriveva in Home Assistant il pacchetto vero arrivato un attimo prima. Nel
+recorder è successo nove volte fra il 12 e il 14/09.
+
+Per i record dei nodi fino alla 2.4.0, che il marcatore non lo mettono, il
+ponte (dalla 2.4.0) usa anche un'altra regola: il nodo trasmette sempre prima
+il pacchetto fresco e poi la coda, quindi un record con timestamp più vecchio di
+oltre 60 s rispetto all'ultimo pacchetto fresco confermato è per forza
+arretrato. Il riferimento si aggiorna solo con timestamp entro 5 minuti dall'ora
+NTP del ponte, così una lettura impazzita del DS1307 non lo sporca.
+
 ### 2.2 ACK — ponte → nodo
 
 ```
@@ -93,10 +113,33 @@ fa partire l'irrigazione automatica: pubblica l'esito `fuso_sconosciuto`
 invece di tirare a indovinare di due ore. **Nodo e ponte vanno quindi
 riflashati insieme.**
 
-Il ponte invia l'ACK **solo dopo** che la pubblicazione MQTT è riuscita. Se
-MQTT o il WiFi sono giù, l'ACK non parte, il nodo non riceve conferma e
-conserva il dato sulla microSD: è così che la catena "nessun dato perso" resta
-intatta.
+Il ponte invia l'ACK **solo dopo che il broker ha confermato di aver ricevuto
+il dato**. Se MQTT o il WiFi sono giù, o il collegamento è in stallo, l'ACK non
+parte, il nodo non riceve conferma e conserva il dato sulla microSD: è così che
+la catena "nessun dato perso" resta intatta.
+
+**Come fa il ponte a saperlo: l'eco di conferma** (firmware del ponte 2.4.0).
+Una pubblicazione MQTT a QoS 0 non ha conferma: `publish()` restituisce `true`
+appena i byte entrano nel buffer TCP dell'ESP32, non quando arrivano. Fino alla
+2.3.0 bastava quello per mandare l'ACK. Il WiFi del ponte però va in stallo
+14-22 volte al giorno, e dal 13/09 12 cicli persi su 15 sono caduti proprio
+dentro uno stallo: ACK partito, dato mai arrivato, niente nel backlog.
+
+Ora, dopo i dati, il ponte pubblica un gettone su `serra/ponte/eco`, un topic a
+cui è iscritto lui stesso, e manda l'ACK solo quando il gettone torna
+(`ECO_TIMEOUT_MS`, 800 ms). L'eco viaggia sulla stessa connessione **dopo** i
+dati, e il broker elabora i messaggi di un client nell'ordine in cui arrivano:
+se ha rimandato indietro l'eco, i dati li aveva già. Sul broker di casa l'eco
+torna in meno di un millisecondo in rete cablata. Il nodo aspetta l'ACK per
+2 s, quindi i margini ci sono. Dall'eco dipende anche il keepalive, alzato da
+30 a 60 s: senza eco un keepalive lungo allungava il tempo in cui il ponte
+confermava dati destinati a un socket morto, con l'eco non costa più nulla.
+
+**Ritrasmissione dello stesso pacchetto.** Se il nodo non sente l'ACK,
+ritrasmette. Il ponte riconosce il duplicato (stessi `s` e `t`), non lo
+ripubblica e conferma di nuovo. Se l'ACK perso portava un comando, glielo
+riallega: prima rispondeva con un ACK senza comando, e il comando, già tolto
+dalla coda, non veniva eseguito da nessuno.
 
 ### 2.3 Esito di un comando — nodo → ponte
 
@@ -125,14 +168,23 @@ risveglio, senza finestre di ascolto aggiuntive.
 
 ### Trasporto e controllo
 
-`v` `s` `t` `now` `c` `o` `a` `res` `rc` `det` `trunc` `ping` `h`
+`v` `s` `t` `now` `tz` `c` `o` `a` `res` `rc` `det` `trunc` `ping` `h` `bk`
+
+`bk=1` marca un record ritrasmesso dal backlog (vedi §2.1). La discovery del
+ponte lo ignora: non diventa un'entità.
 
 `trunc=1` compare quando il pacchetto avrebbe superato il tetto e alcuni campi
 sono stati **omessi**: meglio un pacchetto valido e incompleto che uno tagliato
 a metà e non interpretabile.
 
 I campi vengono scritti in ordine di importanza — sensori, poi stato, infine
-diagnostica (`fw`, `rst`) — quindi è la diagnostica a saltare per prima.
+diagnostica (`fw`, `rst`, `tp`, `txp`) — quindi è la diagnostica a saltare per
+prima. I margini sono stretti: il pacchetto più lungo che il nodo possa
+produrre davvero (dopo un riavvio anomalo, con tutti i valori alla lunghezza
+massima) occupa 235 byte, e 240 una volta accodato con il marcatore, contro un
+limite utile di 240 e 236. Lo verifica
+[`tools/test_arretrati.py`](../tools/test_arretrati.py): **va rilanciato ogni
+volta che si aggiunge un campo al pacchetto.**
 In ogni caso l'omissione non fa danni: i template di Home Assistant rendono
 stringa vuota per le chiavi assenti, e gli aggiornamenti vuoti vengono scartati,
 così ogni entità conserva l'ultimo valore buono fino al pacchetto successivo.
@@ -163,14 +215,23 @@ grafici con dei -127.
 | Chiave | Descrizione |
 |---|---|
 | `irr` | Esito dell'irrigazione, o motivo per cui non è partita (vedi §5) |
-| `bl` | Record in attesa nel backlog su microSD |
+| `bl` | Record in attesa nel backlog su microSD. **`-1` = microSD assente o guasta** (dal fw 2.5.0: prima valeva 0 anche in quel caso, e "coda vuota" e "nessuna coda" non si distinguevano) |
 | `sAuto` | Irrigazione automatica attiva (0/1) |
 | `sOra` `sMin` | Orario programmato |
 | `sDur` | Durata programmata in secondi |
 | `sSoil` | Soglia umidità terreno (−1 = disattivata) |
 | `slp` | Intervallo di deep sleep in secondi |
 | `fw` `rst` | Versione firmware e motivo dell'ultimo reset (solo dopo un reset anomalo) |
-| `tp` | Tappa del ciclo in cui il nodo si era fermato prima di riavviarsi, in chiaro (`tx_stato`, `sd`, `irrigazione`…). Accompagna `fw` e `rst`, quindi compare solo dopo un reset anomalo, e manca alla primissima accensione perché la memoria RTC non contiene ancora niente di attendibile |
+| `tp` | Tappa del ciclo in cui il nodo si era fermato prima di riavviarsi, in chiaro (`tx_stato`, `sd`, `irrigazione`…). Accompagna `fw` e `rst`, quindi compare solo dopo un reset anomalo, e manca alla primissima accensione perché la memoria RTC non contiene ancora niente di attendibile. In Home Assistant è `sensor.serra_tappa_ultimo_blocco` (dal ponte 2.4.0: prima finiva in un'entità numerica che la mostrava sempre vuota) |
+| `txp` | Tentativi che ha richiesto il pacchetto principale del ciclo **precedente**: 1 al primo colpo, fino a 3 con le ritrasmissioni, 4 se non è passato ed è finito nel backlog, 0 al primo ciclo dopo un'interruzione di corrente |
+
+**Eventi ripetuti finché non arrivano.** `fw`, `rst` e `tp`, e l'esito di
+un'irrigazione in `irr`, sono fatti e non letture. Se il pacchetto che li
+porta non passa, il record finisce nello storico, che Home Assistant non legge
+come stato. Per questo il nodo li ripete nel pacchetto principale dei risvegli
+successivi, finché uno viene confermato. Senza, un `nessun_flusso` accodato non
+farebbe mai scattare l'allarme, e un riavvio anomalo resterebbe invisibile. Lo
+stato "pendente" sta in memoria RTC e sopravvive anche ai riavvii.
 
 I campi `s*` esistono perché Home Assistant mostri la configurazione **reale
 del nodo** invece di quella che crede di aver impostato: se un comando si è
@@ -324,7 +385,8 @@ l'impianto — passerebbe a vuoto senza segnalare nulla.
 | `serra/nodo/cmd/res` | ponte → HA | no | Esito di un comando |
 | `serra/nodo/cmd/pending` | ponte → HA | sì | Comandi ancora in attesa |
 | `serra/ponte/stato` | ponte → HA | sì | `online`/`offline` (Last Will) |
-| `serra/ponte/diag` | ponte → HA | sì | Diagnostica del ponte |
+| `serra/ponte/diag` | ponte → HA | sì | Diagnostica del ponte (compresi `eco_ko`, i pacchetti rimasti senza ACK per eco mancata, ed `eco_ms`, il tempo dell'ultima eco) |
+| `serra/ponte/eco` | ponte → ponte | no | Eco di conferma (§2.2): il ponte deve poterci scrivere **e** leggere |
 | `homeassistant/…/config` | ponte → HA | sì | MQTT Discovery |
 
 **Perché due topic distinti per i dati.** Il nodo trasmette prima il pacchetto

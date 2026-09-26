@@ -209,33 +209,69 @@ static bool initBme(void*) {
 #endif
 }
 
-// Una sola misura forzata serve tutte e tre le grandezze: la eseguiamo alla
-// prima lettura del ciclo e le altre due leggono i registri gia' aggiornati.
+/*
+ * Una sola misura forzata serve tutte e tre le grandezze. Le tre letture si
+ * fanno qui, insieme, e si controllano insieme prima di usarle.
+ *
+ * Il 20/09 alle 12:44 UTC il nodo ha pubblicato 180,39 °C, 100 % e
+ * -232,5 hPa: una transazione I2C fallita, che la libreria non segnala.
+ * Restituisce quello che la formula di compensazione ricava dai byte
+ * sbagliati, e Home Assistant l'ha preso per una misura, grafici e
+ * statistiche compresi.
+ *
+ * Ora una lettura fuori dai limiti del chip si ripete una volta, dopo aver
+ * reinizializzato il sensore: se nel frattempo si era resettato ha perso la
+ * configurazione dell'umidita', e senza bme.begin() continuerebbe a dare
+ * numeri senza senso. Se anche la seconda e' implausibile, per tutte e tre
+ * le grandezze parte "non disponibile" (-127), e Home Assistant tiene
+ * l'ultimo valore buono.
+ */
+static float s_bmeT = NAN, s_bmeH = NAN, s_bmeP = NAN;
+
+static bool bmePlausibile(float t, float p) {
+  return !isnan(t) && !isnan(p) &&
+         t > BME_T_MIN && t < BME_T_MAX &&
+         p > BME_P_MIN && p < BME_P_MAX;
+}
+
 static void bmeMisuraSeServe() {
   static uint32_t ultimaMisura = 0;
   if (!g_bmeOk) return;
   if (ultimaMisura != 0 && millis() - ultimaMisura < 1000) return;
-  bme.takeForcedMeasurement();
   ultimaMisura = millis();
+
+  s_bmeT = s_bmeH = s_bmeP = NAN;
+
+  for (uint8_t tentativo = 1; tentativo <= 2; tentativo++) {
+    bool  misurata = bme.takeForcedMeasurement();
+    float t = bme.readTemperature();
+    float h = bme.readHumidity();
+    float p = bme.readPressure() / 100.0f;   // Pa -> hPa
+
+    if (misurata && bmePlausibile(t, p)) {
+      s_bmeT = t;
+      s_bmeH = h;
+      s_bmeP = p;
+      if (tentativo > 1)
+        Serial.println(F("[BME] Lettura buona dopo la reinizializzazione."));
+      return;
+    }
+
+    Serial.printf("[BME] Lettura scartata (tentativo %u): T=%.2f H=%.1f P=%.1f, "
+                  "misura %s.\n", tentativo, t, h, p,
+                  misurata ? "completata" : "scaduta");
+
+    // Prima di riprovare si rimette in sesto il sensore. Se non risponde piu'
+    // nemmeno all'indirizzo, inutile insistere.
+    if (tentativo == 1 && !initBme(nullptr)) break;
+  }
+
+  Serial.println(F("[BME] Nessuna lettura plausibile: invio \"non disponibile\"."));
 }
 
-static float leggiTemp(void*) {
-  if (!g_bmeOk) return NAN;
-  bmeMisuraSeServe();
-  return bme.readTemperature();
-}
-
-static float leggiHum(void*) {
-  if (!g_bmeOk) return NAN;
-  bmeMisuraSeServe();
-  return bme.readHumidity();
-}
-
-static float leggiPres(void*) {
-  if (!g_bmeOk) return NAN;
-  bmeMisuraSeServe();
-  return bme.readPressure() / 100.0f;   // Pa -> hPa
-}
+static float leggiTemp(void*) { bmeMisuraSeServe(); return s_bmeT; }
+static float leggiHum (void*) { bmeMisuraSeServe(); return s_bmeH; }
+static float leggiPres(void*) { bmeMisuraSeServe(); return s_bmeP; }
 
 static bool initLuce(void*) {
 #if USA_LUCE && !USA_ADS1115

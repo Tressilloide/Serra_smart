@@ -10,7 +10,7 @@
 
 #pragma once
 
-#define FW_VERSION_PONTE "2.3.0"
+#define FW_VERSION_PONTE "2.4.0"
 
 // ======================= RADIO LoRa =========================================
 // DEVONO coincidere esattamente con serra_nodo/config.h, altrimenti i due
@@ -60,6 +60,17 @@
 #define TOPIC_DIAG     "serra/ponte/diag"     // diagnostica del ponte
 #define TOPIC_LOG      "serra/ponte/log"      // eventi testuali
 
+/*
+ * Eco di conferma: il ponte si iscrive a questo topic e ci pubblica un
+ * gettone dopo ogni pacchetto del nodo. L'ACK parte solo quando il gettone
+ * torna indietro (vedi confermaDalBroker() in camera_ponte.ino).
+ *
+ * Se un giorno aggiungi al broker un acl_file, l'utente del ponte deve poter
+ * scrivere E leggere questo topic: con l'eco negata nessun pacchetto verrebbe
+ * piu' confermato e il nodo metterebbe tutto nel backlog.
+ */
+#define TOPIC_ECO      "serra/ponte/eco"
+
 // Comandi: Home Assistant pubblica RETAINED su serra/nodo/cmd/<OPCODE>.
 // Il broker fa da coda persistente; il ponte cancella il retained quando
 // consegna il comando al nodo.
@@ -87,6 +98,33 @@
 #define MQTT_RETRY_MS        5000UL     // Intervallo tra i tentativi MQTT
 #define DIAG_INTERVALLO_MS   60000UL    // Pubblicazione diagnostica
 
+/*
+ * Keepalive MQTT: 60 s, era 30.
+ *
+ * Con 30 s il broker chiudeva la sessione dopo 45 s senza ricevere nulla, e
+ * visto che il ponte manda un ping ogni 30 s bastavano 15-45 s di WiFi
+ * disturbato per farla cadere: 14-22 volte al giorno, concentrate fra le 6 e
+ * le 7 del mattino e nelle ore di giorno, quasi mai di notte. Le ritrasmissioni
+ * TCP, che si distanziano sempre di piu', trasformano pochi secondi di
+ * disturbo in un silenzio lungo.
+ *
+ * Nella 2.3.0 il keepalive NON era stato alzato apposta: piu' lungo voleva
+ * dire piu' tempo in cui il ponte confermava al nodo dati che finivano in un
+ * socket morto. Con l'eco di conferma quel rischio non c'e' piu' -- senza eco
+ * niente ACK, e il dato resta sulla microSD -- quindi ora conviene lasciar
+ * passare gli stalli brevi invece di trasformarli in riconnessioni, ognuna
+ * con il suo "non disponibile" in Home Assistant.
+ */
+#define MQTT_KEEPALIVE_SEC   60
+
+/*
+ * Quanto aspettare l'eco prima di rinunciare all'ACK. In rete locale torna in
+ * pochi millisecondi (il ping del server verso il ponte: mediana 3 ms, massimo
+ * 88 ms su quattro ore); il nodo aspetta l'ACK per 2000 ms e la trasmissione
+ * dell'ACK ne costa circa 100, quindi 800 ms lasciano margine su entrambi i lati.
+ */
+#define ECO_TIMEOUT_MS       800UL
+
 // Ogni quanto RIPUBBLICARE la discovery di Home Assistant. I messaggi sono
 // ritenuti, quindi li conserva il broker: ripubblicarli a ogni riconnessione
 // significava solo riversare 5 KB nel socket ogni volta, cosa che su un WiFi
@@ -105,8 +143,42 @@
  */
 #define REBOOT_WIFI_DOWN_MS  900000UL   // 15 minuti senza WiFi -> riavvio
 
-// Un record e' "storico" se il suo timestamp e' piu' vecchio di questo valore.
+/*
+ * Un record e' "storico" se il nodo lo marca con bk=1 (dal firmware 2.5.0 lo
+ * fa con tutto quello che esce dal backlog), oppure, per i record accodati da
+ * firmware precedenti, se il suo timestamp e' piu' vecchio di questo valore.
+ *
+ * La sola regola dell'eta' non bastava: un record accodato un ciclo prima ha
+ * 15 minuti, sembra fresco, e finiva su serra/nodo/stato DOPO il pacchetto
+ * vero, sovrascrivendolo in Home Assistant con valori vecchi. Nel recorder
+ * e' successo nove volte fra il 12 e il 14/09.
+ */
 #define SOGLIA_STORICO_SEC   2400UL     // 40 minuti
+
+/*
+ * Terza regola, che non dipende dal firmware del nodo: il nodo trasmette
+ * SEMPRE prima il pacchetto fresco e solo dopo svuota il backlog, quindi un
+ * record con un timestamp piu' vecchio dell'ultimo pacchetto fresco
+ * confermato e' per forza arretrato. Copre i nodi fino alla 2.4.0, che non
+ * mettono bk=1.
+ *
+ * STORICO_MARGINE_SEC: quanto piu' vecchio deve essere. Non zero perche'
+ * l'orologio del nodo, quando il ponte lo corregge, puo' tornare indietro di
+ * una trentina di secondi a meta' risveglio, e il pacchetto di esito di un
+ * comando che segue non va scambiato per arretrato. Un record del backlog e'
+ * vecchio almeno un intervallo di sonno, 900 s.
+ *
+ * STORICO_PLAUSIBILE_SEC: il riferimento si aggiorna solo con timestamp entro
+ * questa distanza dall'ora NTP del ponte. Un orologio del nodo impazzito
+ * (una lettura del DS1307 andata male, che dica 2099) non deve far sembrare
+ * arretrato tutto quello che arriva dopo.
+ */
+#define STORICO_MARGINE_SEC     60UL
+#define STORICO_PLAUSIBILE_SEC  300UL
+
+// Per quanto tempo un comando allegato a un ACK resta ripetibile, se lo
+// stesso pacchetto torna perche' il nodo quell'ACK non l'ha sentito.
+#define ACK_RIPETIBILE_MS    30000UL
 
 // Anti-duplicati: quante coppie (seq,timestamp) ricordare. Se un ACK si perde
 // il nodo ritrasmette lo stesso pacchetto: senza questo controllo il dato

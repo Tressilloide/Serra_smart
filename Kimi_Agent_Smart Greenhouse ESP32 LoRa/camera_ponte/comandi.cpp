@@ -204,9 +204,19 @@ void codaPubblicaPending() {
   char payload[256];
   int pos = snprintf(payload, sizeof(payload), "{\"n\":%u,\"coda\":[", nCoda);
 
-  for (uint8_t i = 0; i < nCoda && pos < (int)sizeof(payload) - 40; i++) {
-    pos += snprintf(payload + pos, sizeof(payload) - pos, "%s\"%s:%s\"",
-                    i ? "," : "", coda[i].opcode, coda[i].args);
+  /*
+   * Ogni voce entra solo se dopo di lei restano i 3 byte di "]}" e del
+   * terminatore. Il controllo precedente (pos < 216) guardava solo dove la
+   * voce cominciava: una da 60 caratteri partita a 215 portava pos oltre il
+   * buffer, e la sottrazione successiva, fra interi senza segno, passava a
+   * snprintf una dimensione enorme. La lista puo' uscire accorciata, ma il
+   * JSON resta valido e lo stack intatto.
+   */
+  for (uint8_t i = 0; i < nCoda; i++) {
+    int n = snprintf(payload + pos, sizeof(payload) - pos, "%s\"%s:%s\"",
+                     i ? "," : "", coda[i].opcode, coda[i].args);
+    if (n < 0 || pos + n > (int)sizeof(payload) - 3) { payload[pos] = '\0'; break; }
+    pos += n;
   }
   snprintf(payload + pos, sizeof(payload) - pos, "]}");
 

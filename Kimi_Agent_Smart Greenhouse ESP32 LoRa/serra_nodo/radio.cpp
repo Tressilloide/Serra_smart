@@ -8,6 +8,9 @@
 static SPIClass loraSPI(HSPI);
 static bool g_radioOk   = false;
 static bool g_spiPronto = false;   // l'HSPI si inizializza una volta sola
+static uint8_t g_tentativiUsati = 0;
+
+uint8_t radioTentativiUltimoInvio() { return g_tentativiUsati; }
 
 // ---------------------------------------------------------------------------
 
@@ -92,7 +95,8 @@ static uint32_t tempoDiVoloMs(size_t lunghezza) {
  * flag -- perche' un disturbo gli ha scombinato i registri, o perche' il bus
  * SPI e' piantato e ogni lettura torna sempre lo stesso valore -- quel ciclo
  * gira per sempre. Il nodo resta appeso dentro setup(), il watchdog globale
- * lo azzera dopo WDT_SETUP_SEC (180 s) e si perde l'intero ciclo di misure.
+ * lo azzera dopo WDT_SETUP_SEC (allora 180 s, oggi 60) e si perde l'intero
+ * ciclo di misure.
  * E' la firma dei riavvii rst=6 visti in Home Assistant, compresi due
  * avvenuti a valvola ferma, cioe' senza che il solenoide c'entrasse nulla.
  *
@@ -207,6 +211,7 @@ static bool attendiAck(uint32_t seqAttesa, uint32_t timeoutMs, RispostaAck& out)
 
 bool radioInviaConAck(const char* pacchetto, RispostaAck& out) {
   memset(&out, 0, sizeof(RispostaAck));
+  g_tentativiUsati = TX_RETRIES + 1;     // "non confermato", finche' un ACK non dice altro
 
   if (!g_radioOk || !pacchetto) return false;
 
@@ -219,6 +224,7 @@ bool radioInviaConAck(const char* pacchetto, RispostaAck& out) {
 
     if (trasmetti(pacchetto) && attendiAck(seq, ACK_TIMEOUT_MS, out)) {
       Serial.printf("[LoRa] ACK ricevuto (RSSI %d dBm, SNR %.1f dB).\n", out.rssi, out.snr);
+      g_tentativiUsati = (uint8_t)tentativo;
       return true;
     }
 

@@ -18,7 +18,7 @@
 // ======================= IDENTITA' DEL NODO =================================
 
 #define NODE_ID          "GH1"    // Identificativo di questo nodo (max 8 char)
-#define FW_VERSION       "2.4.0"  // Riportata in Home Assistant
+#define FW_VERSION       "2.5.0"  // Riportata in Home Assistant
 
 // ======================= RADIO LoRa =========================================
 // Questi parametri DEVONO essere identici sul ponte in camera.
@@ -130,6 +130,22 @@
 // il pacchetto LoRa si accorcia e Home Assistant non mostra entita' fantasma.
 
 #define USA_BME280       1        // Temperatura / umidita' / pressione (I2C)
+
+/*
+ * Limiti di plausibilita' del BME280: sono quelli di funzionamento del chip,
+ * non quelli della serra, che d'estate arriva davvero oltre i 50 °C.
+ *
+ * Servono a riconoscere una lettura I2C fallita. Il 20/09 il nodo ha
+ * pubblicato 180,39 °C, 100 % e -232,5 hPa: e' quello che la formula di
+ * compensazione ricava da registri letti male, e la libreria lo restituisce
+ * come fosse una misura. L'umidita' non ha limiti propri: la libreria la
+ * costringe fra 0 e 100, e il 100 % di notte in serra e' un valore vero.
+ */
+#define BME_T_MIN        -40.0f   // °C
+#define BME_T_MAX         85.0f   // °C
+#define BME_P_MIN        300.0f   // hPa
+#define BME_P_MAX       1100.0f   // hPa
+
 #define USA_LUCE         1        // Fotoresistenza analogica su GPIO32
 #define USA_TENSIONE     1        // Partitore di tensione su GPIO33
 

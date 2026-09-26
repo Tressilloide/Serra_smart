@@ -5,7 +5,8 @@
  *  + sensori umidita' terreno + flussometro YF-S201
  * ============================================================================
  *
- *  Firmware 2.0 — vedi docs/Guida_Serra_Smart.md e docs/PROTOCOLLO.md
+ *  Versione in config.h (FW_VERSION) — vedi docs/Guida_Serra_Smart.md e
+ *  docs/PROTOCOLLO.md
  *
  *  ---------------------------------------------------------------------------
  *  CICLO DI VITA (il nodo vive solo dentro setup(), poi torna a dormire)
@@ -71,6 +72,34 @@
 RTC_NOINIT_ATTR uint32_t g_seq;             // contatore pacchetti
 RTC_NOINIT_ATTR uint32_t g_risvegli;        // risvegli dall'ultima mancanza di corrente
 
+/*
+ * Eventi da ripetere finche' non arrivano davvero a Home Assistant.
+ *
+ * Un pacchetto che non passa finisce nel backlog, e dal firmware 2.5.0 il
+ * ponte pubblica i record arretrati su serra/nodo/storico e non piu' sullo
+ * stato (vedi marcaArretrato()). E' giusto per le letture, che invecchiano,
+ * ma NON per gli eventi: se il pacchetto perso era quello dell'irrigazione,
+ * Home Assistant non vedrebbe mai un "nessun_flusso" e l'allarme non
+ * partirebbe; se era il primo dopo un riavvio anomalo, il riavvio
+ * resterebbe invisibile. Fin qui li vedeva solo per sbaglio, perche' il
+ * record arretrato sovrascriveva lo stato.
+ *
+ * Quindi questi fatti restano "pendenti" e si ripetono nel pacchetto
+ * principale dei risvegli successivi, finche' uno di quei pacchetti non
+ * viene confermato. In RTC_NOINIT_ATTR, come g_seq, per sopravvivere anche
+ * a un riavvio: si azzerano solo quando torna la corrente.
+ */
+RTC_NOINIT_ATTR uint8_t  g_esitoIrrigPendente;   // l'esito dell'ultima irrigazione non e' ancora arrivato
+RTC_NOINIT_ATTR uint8_t  g_resetPendente;        // la diagnostica dell'ultimo reset non e' ancora arrivata
+RTC_NOINIT_ATTR uint8_t  g_resetMotivo;          // ...con il suo motivo (esp_reset_reason_t)
+RTC_NOINIT_ATTR uint8_t  g_resetTappa;           // ...e la tappa in cui il ciclo si era fermato
+
+// Tentativi che ha richiesto il pacchetto principale del ciclo precedente
+// (campo "txp"). Dice quanto e' fragile il collegamento, e in particolare se
+// la trasmissione subito dopo l'irrigazione fatica ancora: il 22/09 e'
+// passata al terzo e ultimo tentativo, e lo si e' capito solo dai tempi.
+RTC_NOINIT_ATTR uint8_t  g_txpPrec;
+
 // ---------------------------------------------------------------------------
 //  Stato del ciclo corrente
 // ---------------------------------------------------------------------------
@@ -124,12 +153,20 @@ static void assimilaAck(const RispostaAck& ack) {
  * "det" del pacchetto di esito comando: in "Esito irrigazione" non compariva
  * mai, e se quel pacchetto si perdeva non ne restava traccia da nessuna parte.
  *
+ * Lo stesso vale nei risvegli successivi finche' quel fatto non e' arrivato
+ * davvero (g_esitoIrrigPendente): se il pacchetto che lo portava e' finito
+ * nel backlog, dallo storico Home Assistant non lo leggerebbe.
+ *
  * Negli altri risvegli il campo torna a dire perche' l'automatica non e'
  * partita ("fuori_orario", "ora_non_attendibile", ...), che e' la diagnostica
  * per cui era nato.
  */
+static bool esitoIrrigDaRiferire() {
+  return g_irrigazioneDaRiferire || irrigazioneEseguitaOra() || g_esitoIrrigPendente;
+}
+
 static const char* esitoDaSegnalare() {
-  if (g_irrigazioneDaRiferire || irrigazioneEseguitaOra())
+  if (esitoIrrigDaRiferire())
     return irrigazioneEsitoTesto(irrigazioneEsitoUltima());
   return irrigazioneEsitoTesto(g_esitoIrrig);
 }
@@ -168,7 +205,12 @@ static void aggiungiStato(PacchettoKV& pkt) {
   pkt.aggiungiU("slp",   g_cfg.sleepSec);
 
   pkt.aggiungi ("irr",   esitoDaSegnalare());
-  pkt.aggiungiU("bl",    backlogConta());
+
+  // -1 = microSD assente o guasta. Prima si mandava 0 anche in quel caso, e
+  // "coda vuota" e "nessuna coda" erano indistinguibili: con la scheda morta
+  // ogni pacchetto non consegnato andava perso mentre Home Assistant
+  // mostrava un rassicurante zero.
+  pkt.aggiungiI("bl", backlogDisponibile() ? (int32_t)backlogConta() : -1);
 }
 
 // Invia un pacchetto e restituisce l'eventuale ACK.
@@ -179,6 +221,61 @@ static bool inviaPacchetto(const PacchettoKV& pkt, RispostaAck& ack) {
 
   Serial.printf("[TX] %s\n", buf);
   return radioInviaConAck(buf, ack);
+}
+
+// ===========================================================================
+//  Accodamento dei pacchetti non consegnati
+// ===========================================================================
+
+static const char   MARCA_ARRETRATO[] = ";bk=1";
+static const size_t LUNG_MARCA        = sizeof(MARCA_ARRETRATO) - 1;
+
+/*
+ * Inserisce ";bk=1" subito dopo il prefisso: "GH1;v=2;..." -> "GH1;bk=1;v=2;...".
+ *
+ * E' cosi' che il ponte riconosce un record uscito dal backlog e lo pubblica
+ * su serra/nodo/storico invece che sullo stato attuale. Prima lo capiva solo
+ * dall'eta', oltre 40 minuti: un record del ciclo precedente, vecchio di 15,
+ * passava per fresco e sovrascriveva in Home Assistant il pacchetto vero
+ * arrivato un attimo prima. Nel recorder e' successo nove volte fra il 12 e
+ * il 14/09, e il comando eventualmente allegato al suo ACK andava perso.
+ *
+ * In testa e non in coda perche' la serializzazione, se il pacchetto e'
+ * troppo lungo, omette i campi in fondo: il marcatore non deve essere fra
+ * quelli.
+ */
+static void marcaArretrato(char* riga) {
+  char* sep = strchr(riga, PROTO_SEP);
+  if (!sep) return;
+  size_t n = strlen(riga);
+  memmove(sep + LUNG_MARCA, sep, n - (size_t)(sep - riga) + 1);   // terminatore compreso
+  memcpy(sep, MARCA_ARRETRATO, LUNG_MARCA);
+}
+
+/*
+ * Accoda su microSD un pacchetto che il ponte non ha confermato.
+ * Ritorna false se non ci e' riuscito, cioe' se il pacchetto e' perso.
+ */
+static bool accodaNonConsegnato(const PacchettoKV& p) {
+  traccia(TAPPA_SD_ACCODA);
+
+  // Si serializza lasciando libero lo spazio del marcatore: la riga finale
+  // non supera mai PROTO_MAX_PAYLOAD, nemmeno con un pacchetto al limite.
+  char buf[PROTO_MAX_PAYLOAD + 8];
+  size_t n = p.serializza(NODE_ID, buf, PROTO_MAX_PAYLOAD + 1 - LUNG_MARCA);
+  if (n == 0) return false;
+  marcaArretrato(buf);
+
+  if (backlogAccoda(buf)) {
+    Serial.println(F("[BACKLOG] Pacchetto accodato su microSD."));
+    return true;
+  }
+
+  // Prima questo caso stampava lo stesso "accodato": backlogAccoda() fallisce
+  // in silenzio se la scheda non c'e', e il valore di ritorno era ignorato.
+  Serial.println(F("[BACKLOG] ERRORE: accodamento fallito (microSD assente o guasta): "
+                   "questo pacchetto e' PERSO."));
+  return false;
 }
 
 // ===========================================================================
@@ -247,12 +344,12 @@ static void gestisciComandi(RispostaAck& ack) {
     bool consegnato = inviaPacchetto(res, ackRes);
 
     if (!consegnato) {
-      // L'esito non e' arrivato: lo si accoda come qualunque altro dato.
-      // Home Assistant lo vedra' al prossimo aggancio del link.
-      traccia(TAPPA_SD_ACCODA);
-      char buf[PROTO_MAX_PAYLOAD + 8];
-      res.serializza(NODE_ID, buf, sizeof(buf));
-      backlogAccoda(buf);
+      // L'esito non e' arrivato: lo si accoda come qualunque altro dato, e il
+      // ponte lo pubblichera' su serra/nodo/cmd/res al prossimo aggancio.
+      // Se il comando ha fatto scorrere l'acqua, il suo esito in "irr" va
+      // anche ripetuto nei prossimi pacchetti: dallo storico HA non lo legge.
+      if (irrigazioneEseguitaOra()) g_esitoIrrigPendente = 1;
+      accodaNonConsegnato(res);
       break;
     }
 
@@ -379,7 +476,15 @@ void setup() {
   // in avanti ogni tappa la sovrascrive.
   tracciaInit();
   const Tappa tappaPrec = tracciaPrecedente();
-  if (tracciaMemoriaPersa()) { g_seq = 0; g_risvegli = 0; }
+  if (tracciaMemoriaPersa()) {
+    g_seq = 0;
+    g_risvegli = 0;
+    g_esitoIrrigPendente = 0;
+    g_resetPendente = 0;
+    g_resetMotivo = 0;
+    g_resetTappa = 0;             // TAPPA_IGNOTA
+    g_txpPrec = 0;                // 0 = non si sa: primo ciclo dopo la corrente
+  }
   g_risvegli++;
 
   Serial.println();
@@ -467,10 +572,19 @@ void setup() {
   sensoriLeggiTutti(pkt);
   aggiungiStato(pkt);
 
-  // Diagnostica: solo dopo un reset anomalo, per non sprecare byte ogni volta
+  // Diagnostica: solo dopo un reset che non sia il risveglio dal deep sleep,
+  // per non sprecare byte ogni volta. Resta pendente, e si ripete, finche' un
+  // pacchetto che la contiene non viene confermato: il primo pacchetto dopo
+  // un blocco e' proprio quello che rischia di piu' di non passare.
   if (motivo != ESP_RST_DEEPSLEEP) {
+    g_resetPendente = 1;
+    g_resetMotivo   = (uint8_t)motivo;
+    g_resetTappa    = (uint8_t)tappaPrec;
+  }
+
+  if (g_resetPendente) {
     pkt.aggiungi ("fw",  FW_VERSION);
-    pkt.aggiungiU("rst", (uint32_t)motivo);
+    pkt.aggiungiU("rst", g_resetMotivo);
 
     /*
      * In che punto del ciclo si era fermato il nodo prima di riavviarsi.
@@ -478,29 +592,34 @@ void setup() {
      * bloccato, mai DOVE: la differenza fra sapere e tirare a indovinare
      * fra trasmissione LoRa, microSD e bus I2C.
      */
-    if (tappaPrec != TAPPA_IGNOTA)
-      pkt.aggiungi("tp", tracciaTesto(tappaPrec));
+    if ((Tappa)g_resetTappa != TAPPA_IGNOTA)
+      pkt.aggiungi("tp", tracciaTesto((Tappa)g_resetTappa));
   }
+
+  // In fondo perche' e' il campo meno importante: se il pacchetto fosse
+  // troppo lungo, la serializzazione ometterebbe per primi gli ultimi.
+  pkt.aggiungiU("txp", g_txpPrec);
 
   // (8) Trasmissione + comandi
   traccia(TAPPA_TX_STATO);
   RispostaAck ack;
-  if (radioOk) {
-    g_linkOk = inviaPacchetto(pkt, ack);
+  if (radioOk) g_linkOk = inviaPacchetto(pkt, ack);
+  g_txpPrec = g_linkOk ? radioTentativiUltimoInvio() : (uint8_t)(TX_RETRIES + 1);
 
-    if (g_linkOk) {
-      assimilaAck(ack);
-      gestisciComandi(ack);
-    }
-  }
+  if (g_linkOk) {
+    // Gli eventi pendenti viaggiavano in questo pacchetto e sono arrivati.
+    // Si azzerano PRIMA dei comandi, che possono generarne di nuovi.
+    g_resetPendente      = 0;
+    g_esitoIrrigPendente = 0;
 
-  // Pacchetto non consegnato: finisce nel backlog e verra' ritrasmesso.
-  if (!g_linkOk) {
-    traccia(TAPPA_SD_ACCODA);
-    char buf[PROTO_MAX_PAYLOAD + 8];
-    pkt.serializza(NODE_ID, buf, sizeof(buf));
-    backlogAccoda(buf);
-    Serial.println(F("[BACKLOG] Pacchetto accodato su microSD."));
+    assimilaAck(ack);
+    gestisciComandi(ack);
+  } else {
+    // Pacchetto non consegnato: finisce nel backlog e verra' ritrasmesso,
+    // come record storico. L'esito di un'irrigazione che conteneva va
+    // ripetuto nei prossimi pacchetti, o Home Assistant non lo vedrebbe.
+    if (esitoIrrigDaRiferire()) g_esitoIrrigPendente = 1;
+    accodaNonConsegnato(pkt);
   }
 
   // (9) Svuotamento del backlog: solo se il link e' vivo, altrimenti si

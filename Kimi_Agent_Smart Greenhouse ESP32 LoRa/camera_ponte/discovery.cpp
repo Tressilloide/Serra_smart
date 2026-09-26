@@ -3,6 +3,7 @@
 #include "protocollo.h"
 
 #include <string.h>
+#include <esp_task_wdt.h>
 
 static PubSubClient* mqtt = nullptr;
 
@@ -59,6 +60,14 @@ static const EntitaSensore ENTITA[] = {
   { "bl",       "Record in backlog",      nullptr, nullptr,         "measurement",  "mdi:database-clock",    false, true  },
   { "fw",       "Firmware nodo",          nullptr, nullptr,         nullptr,        "mdi:chip",              true,  true  },
   { "rst",      "Motivo ultimo riavvio",  nullptr, nullptr,         nullptr,        "mdi:restart-alert",     false, true  },
+  // La tappa della scatola nera e' un TESTO ("tx_stato", "sd", ...). Senza
+  // questa riga finiva nel fallback generico, che e' numerico: il template
+  // trasformava ogni testo in stringa vuota e in Home Assistant la tappa non
+  // sarebbe comparsa mai, proprio il giorno in cui servisse.
+  { "tp",       "Tappa ultimo blocco",    nullptr, nullptr,         nullptr,        "mdi:map-marker-path",   true,  true  },
+  // Tentativi che il pacchetto principale del ciclo PRECEDENTE ha richiesto:
+  // 1 al primo colpo, fino a 3 con le ritrasmissioni, 4 se non e' passato.
+  { "txp",      "Tentativi trasmissione", nullptr, nullptr,         "measurement",  "mdi:repeat",            false, true  },
   { "trunc",    "Pacchetto troncato",     nullptr, nullptr,         nullptr,        "mdi:alert",             false, true  },
 };
 
@@ -73,7 +82,8 @@ static const uint8_t N_ENTITA = sizeof(ENTITA) / sizeof(ENTITA[0]);
 static const char* IGNORA[] = {
   "v", "s", "t", "now", "c", "o", "a", "h", "res", "rc",
   "sOra", "sMin", "sDur", "sAuto", "sSoil", "slp",
-  "cmdL", "cmdS", "ping"
+  "cmdL", "cmdS", "ping",
+  "bk"      // marcatore dei record arretrati: dice al ponte dove pubblicarli
 };
 static const uint8_t N_IGNORA = sizeof(IGNORA) / sizeof(IGNORA[0]);
 
@@ -232,7 +242,13 @@ static bool pubblica(const char* topic, const char* payload) {
    * stabilita, il che provoca una riconnessione, che rilancia la raffica: un
    * ciclo che si autoalimenta, osservato davvero nel log del ponte.
    * mqtt->loop() da' modo allo stack di svuotare il buffer di trasmissione.
+   *
+   * Il watchdog va nutrito qui dentro: sono una ventina di messaggi di fila,
+   * e su un collegamento in stallo ogni publish puo' restare bloccata fino a
+   * una decina di secondi prima di arrendersi. Sommate, possono superare i
+   * 30 s del watchdog del loop e riavviare il ponte a meta' discovery.
    */
+  esp_task_wdt_reset();
   mqtt->loop();
   delay(30);
   return true;
@@ -418,6 +434,10 @@ static const DiagPonte DIAG[] = {
   { "ponte_hmin",   "Ponte memoria minima","heap_minimo",    "B",   "data_size",       "mdi:memory"          },
   { "ponte_rwifi",  "Riconnessioni WiFi",  "riconn_wifi",    nullptr, nullptr,         "mdi:wifi-sync"       },
   { "ponte_rmqtt",  "Riconnessioni MQTT",  "riconn_mqtt",    nullptr, nullptr,         "mdi:lan-disconnect"  },
+  // Pacchetti rimasti senza ACK perche' il broker non ha confermato con l'eco:
+  // il nodo li ritrasmette o li tiene sulla microSD. Se cresce, il WiFi del
+  // ponte va in stallo spesso.
+  { "ponte_ecoko",  "Conferme MQTT mancate", "eco_ko",       nullptr, nullptr,         "mdi:message-alert"   },
 };
 
 bool discoveryPubblicaPonte() {

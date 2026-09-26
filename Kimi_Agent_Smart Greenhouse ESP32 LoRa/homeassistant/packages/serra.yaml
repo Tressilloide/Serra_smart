@@ -145,6 +145,7 @@ template:
           {% if states('binary_sensor.serra_ponte_online') == 'off' %} Ponte offline
           {% elif silenzio > 120 %} Nodo non risponde
           {% elif batt < 11.0 %} Batteria scarica
+          {% elif backlog < 0 %} MicroSD guasta
           {% elif backlog > 10 %} Dati in attesa
           {% elif coda > 0 %} Comando in coda
           {% else %} Tutto ok

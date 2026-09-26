@@ -64,5 +64,12 @@ bool radioInit();
  */
 bool radioInviaConAck(const char* pacchetto, RispostaAck& out);
 
+/*
+ * Quanti tentativi ha richiesto l'ultima radioInviaConAck(): da 1 a
+ * TX_RETRIES se il ponte ha confermato, TX_RETRIES + 1 se non ha confermato
+ * nessuno. Alimenta il campo "txp" del pacchetto successivo.
+ */
+uint8_t radioTentativiUltimoInvio();
+
 // Mette la radio in sleep prima del deep sleep dell'ESP32.
 void radioSpegni();

@@ -77,7 +77,10 @@ for t in tappe:
 # vogliamo poter contare. Solo RTC_NOINIT_ATTR sopravvive.
 
 ino = leggi("serra_nodo.ino")
-for variabile in ("g_seq", "g_risvegli"):
+DEVONO_SOPRAVVIVERE = ("g_seq", "g_risvegli",
+                       # eventi da ripetere finche' non arrivano (dal fw 2.5.0)
+                       "g_esitoIrrigPendente", "g_resetPendente", "g_txpPrec")
+for variabile in DEVONO_SOPRAVVIVERE:
     riga = re.search(r"^.*\b%s\b\s*[;=].*$" % variabile, ino, re.M)
     if not riga:
         errori.append("%s non trovata in serra_nodo.ino" % variabile)
@@ -85,15 +88,36 @@ for variabile in ("g_seq", "g_risvegli"):
         errori.append("%s non e' in RTC_NOINIT_ATTR: si azzera a ogni riavvio anomalo"
                       % variabile)
 
-if "if (tracciaMemoriaPersa()) { g_seq = 0; g_risvegli = 0; }" not in ino:
-    errori.append("i contatori in RTC_NOINIT_ATTR non vengono azzerati all'accensione: "
-                  "al primo avvio conterrebbero spazzatura")
+# ...e il prezzo di RTC_NOINIT_ATTR: appena data corrente contiene spazzatura.
+# OGNI variabile dichiarata cosi' va azzerata quando tracciaMemoriaPersa() lo
+# dice, non solo quelle elencate qui sopra.
+noinit = re.findall(r"^\s*RTC_NOINIT_ATTR\s+\w+\s+(\w+)\s*;", ino, re.M)
+blocco = re.search(r"if\s*\(\s*tracciaMemoriaPersa\(\)\s*\)\s*\{(.*?)\}", ino, re.S)
+if not blocco:
+    errori.append("manca il blocco if (tracciaMemoriaPersa()) { ... } in setup()")
+else:
+    for variabile in noinit:
+        if not re.search(r"\b%s\s*=\s*0\s*;" % variabile, blocco.group(1)):
+            errori.append("%s e' in RTC_NOINIT_ATTR ma non viene azzerata all'accensione: "
+                          "al primo avvio conterrebbe spazzatura" % variabile)
 
 # --- 5. la tappa deve finire nel pacchetto ----------------------------------
 
-if 'pkt.aggiungi("tp", tracciaTesto(tappaPrec));' not in ino:
+if not re.search(r'pkt\.aggiungi\(\s*"tp"\s*,\s*tracciaTesto\(', ino):
     errori.append("il campo \"tp\" non viene aggiunto al pacchetto: la scatola nera "
                   "resterebbe leggibile solo dal monitor seriale")
+
+# ...e il ponte deve saperlo mostrare. "tp" e' un testo: nel fallback generico
+# della discovery, che e' numerico, ogni valore diventava stringa vuota e in
+# Home Assistant la tappa non sarebbe comparsa mai.
+discovery = io.open(os.path.join(RADICE, "camera_ponte", "discovery.cpp"),
+                    encoding="utf-8").read()
+voce = re.search(r'\{\s*"tp"\s*,[^}]*\}', discovery)
+if not voce:
+    errori.append("\"tp\" non e' nella tabella ENTITA del ponte: finirebbe nel "
+                  "fallback numerico e in Home Assistant resterebbe vuota")
+elif not re.search(r",\s*true\s*,\s*(true|false)\s*\}$", voce.group(0)):
+    errori.append("\"tp\" e' nella tabella ENTITA del ponte ma non come testuale")
 
 # --- esito ------------------------------------------------------------------
 

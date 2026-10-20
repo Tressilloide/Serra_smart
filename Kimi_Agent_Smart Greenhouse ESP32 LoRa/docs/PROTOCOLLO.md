@@ -141,6 +141,19 @@ ripubblica e conferma di nuovo. Se l'ACK perso portava un comando, glielo
 riallega: prima rispondeva con un ACK senza comando, e il comando, già tolto
 dalla coda, non veniva eseguito da nessuno.
 
+**Quando gli ACK smettono di arrivare** (firmware del ponte 2.5.0). Un
+duplicato di un pacchetto già confermato è la prova che quell'ACK il nodo non
+l'ha sentito. Capita ogni tanto; per tre cicli di fila (`ACK_PERSI_CICLI`)
+vuol dire che è la trasmissione del ponte a non arrivare, e il ponte resetta e
+riconfigura la propria radio prima di rispondere. Non è un caso teorico: dal 13
+al 20/10/2026 il ponte ha ricevuto ogni pacchetto e risposto a ognuno, ma il
+nodo non ha sentito una sola risposta per sei giorni e mezzo (tre tentativi a
+ciclo, `txp` sempre a 4, backlog salito fino a 344 record), e si è sistemato
+solo riflashando il ponte. Le ritrasmissioni di pacchetti già confermati le
+conta `ack_persi` nella diagnostica del ponte. La radio del ponte si sorveglia
+anche da sola, rileggendone i registri, e si resetta se il nodo resta muto per
+due cicli: vedi [`camera_ponte/radio.h`](../camera_ponte/radio.h).
+
 ### 2.3 Esito di un comando — nodo → ponte
 
 È un normale pacchetto dati con in più:
@@ -385,7 +398,8 @@ l'impianto — passerebbe a vuoto senza segnalare nulla.
 | `serra/nodo/cmd/res` | ponte → HA | no | Esito di un comando |
 | `serra/nodo/cmd/pending` | ponte → HA | sì | Comandi ancora in attesa |
 | `serra/ponte/stato` | ponte → HA | sì | `online`/`offline` (Last Will) |
-| `serra/ponte/diag` | ponte → HA | sì | Diagnostica del ponte (compresi `eco_ko`, i pacchetti rimasti senza ACK per eco mancata, ed `eco_ms`, il tempo dell'ultima eco) |
+| `serra/ponte/diag` | ponte → HA | sì | Diagnostica del ponte (compresi `eco_ko`, i pacchetti rimasti senza ACK per eco mancata, ed `eco_ms`, il tempo dell'ultima eco; dalla 2.5.0 anche lo stato della radio: `radio_ok`, `radio_rip`, `radio_causa`, `radio_det`, `radio_avv`, `rst_hw`, `ack_persi`, `spi_inc`, `crc_ko`) |
+| `serra/ponte/log` | ponte → HA | sì | L'ultima riparazione della radio del ponte, con motivo e dettaglio (per esempio il registro trovato alterato) |
 | `serra/ponte/eco` | ponte → ponte | no | Eco di conferma (§2.2): il ponte deve poterci scrivere **e** leggere |
 | `homeassistant/…/config` | ponte → HA | sì | MQTT Discovery |
 

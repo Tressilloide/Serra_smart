@@ -438,6 +438,14 @@ static const DiagPonte DIAG[] = {
   // il nodo li ritrasmette o li tiene sulla microSD. Se cresce, il WiFi del
   // ponte va in stallo spesso.
   { "ponte_ecoko",  "Conferme MQTT mancate", "eco_ko",       nullptr, nullptr,         "mdi:message-alert"   },
+  // Le tre spie della radio del ponte (vedi radio.h). Riparazioni: quante
+  // volte si e' dovuta resettare da sola, il motivo e' su serra/ponte/log.
+  // ACK persi: ritrasmissioni di pacchetti gia' confermati, cioe' risposte
+  // che il nodo non ha sentito. Letture SPI incoerenti: disturbi sui fili fra
+  // ESP32 e modulo; se cresce, il problema e' il cablaggio, non il codice.
+  { "ponte_radiorip", "Riparazioni radio",   "radio_rip",      nullptr, nullptr,         "mdi:radio-tower"     },
+  { "ponte_ackpersi", "ACK persi",           "ack_persi",      nullptr, nullptr,         "mdi:message-reply-text" },
+  { "ponte_spiinc",   "Letture SPI incoerenti", "spi_inc",     nullptr, nullptr,         "mdi:sine-wave"       },
 };
 
 bool discoveryPubblicaPonte() {
@@ -462,6 +470,21 @@ bool discoveryPubblicaPonte() {
       TOPIC_PONTE, DEV);
     if (!pubblica(topic, payload)) return false;
   }
+
+  // --- Ultima riparazione della radio --------------------------------------
+  // Un testo, non un numero: il motivo ("registri", "silenzio", ...) e, negli
+  // attributi, il dettaglio, per esempio il registro trovato alterato. Legge
+  // il messaggio ritenuto di serra/ponte/log, quindi dice cosa e' successo
+  // anche giorni dopo e anche dopo un riavvio di Home Assistant. Finche' una
+  // riparazione non c'e' mai stata resta "sconosciuto", ed e' il caso buono.
+  snprintf(topic, sizeof(topic), HA_DISCOVERY_PREFIX "/sensor/ponte_radiocausa/config");
+  snprintf(payload, sizeof(payload),
+    "{\"name\":\"Ultima riparazione radio\",\"uniq_id\":\"ponte_radiocausa\","
+    "\"stat_t\":\"%s\",\"val_tpl\":\"{{ value_json.causa | default('') }}\","
+    "\"json_attr_t\":\"%s\",\"ic\":\"mdi:radio-tower\",\"ent_cat\":\"diagnostic\","
+    "\"avty_t\":\"%s\",%s}",
+    TOPIC_LOG, TOPIC_LOG, TOPIC_PONTE, DEV);
+  if (!pubblica(topic, payload)) return false;
 
   Serial.println(F("[HA] Entita' diagnostiche del ponte pubblicate."));
   return true;

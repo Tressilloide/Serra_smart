@@ -10,7 +10,7 @@
 
 #pragma once
 
-#define FW_VERSION_PONTE "2.4.0"
+#define FW_VERSION_PONTE "2.5.0"
 
 // ======================= RADIO LoRa =========================================
 // DEVONO coincidere esattamente con serra_nodo/config.h, altrimenti i due
@@ -32,11 +32,56 @@
  *
  * L'attesa viene limitata a tre volte il tempo di volo calcolato: un ACK
  * di una sessantina di byte vola in 113 ms, quindi la guardia scatta a
- * 439 ms. Nessuna trasmissione onesta ci arriva nemmeno vicino.
+ * 439 ms. Nessuna trasmissione onesta ci arriva nemmeno vicino, e dalla
+ * 2.5.0 una che non si conclude vuol dire reset della radio (radio.cpp).
  */
 #define TX_GUARDIA_X     3        // Fattore di guardia sul tempo di volo
 #define TX_GUARDIA_MS    100      // ...piu' questo margine fisso
 #define LORA_TX_POWER 17
+
+/*
+ * Preambolo e sync word: quelli di fabbrica dell'SX1278, che il nodo usa
+ * senza mai impostarli. Il ponte li scrive comunque, come tutti gli altri
+ * registri: se il reset hardware non funzionasse, dopo un riavvio software
+ * il modulo conserverebbe i valori che aveva prima, qualunque fossero.
+ */
+#define LORA_PREAMBOLO   8
+#define LORA_SYNC_WORD   0x12
+
+/*
+ * Bus SPI della radio a 1 MHz, non agli 8 MHz predefiniti della libreria.
+ * Il ponte scambia con il modulo pochi byte per pacchetto, e su fili volanti
+ * un clock lento e' molto piu' difficile da disturbare: un solo bit
+ * sbagliato basta a lasciare la radio sorda per giorni (vedi radio.h).
+ */
+#define LORA_SPI_HZ      1000000UL
+
+// Ogni quanto rileggere i registri della radio, e se il modulo non risponde
+// ogni quanto riprovare ad avviarlo (vedi radio.h)
+#define RADIO_VERIFICA_MS  10000UL
+#define RADIO_RIPROVA_MS   30000UL
+
+/*
+ * Riparazioni per sintomi, quando i registri sembrano a posto ma la radio no
+ * (vedi sorvegliaSilenzio() e controllaAckPerso() in camera_ponte.ino).
+ *
+ * SILENZIO: nessun pacchetto leggibile del nodo per SILENZIO_CICLI risvegli
+ * di fila piu' SILENZIO_MARGINE_SEC. Un ciclo perso capita, due di fila
+ * quasi mai: il 20/10 la radio e' rimasta sorda per undici ore. Con il sonno
+ * di 900 s fa 35 minuti, e la durata del sonno la dice il nodo stesso nel
+ * campo slp. Se dopo il reset il nodo resta muto, l'attesa raddoppia a ogni
+ * tentativo fino a otto volte: un nodo spento davvero non deve far
+ * resettare la radio ogni mezz'ora per giorni.
+ *
+ * ACK PERSI: il nodo ritrasmette un pacchetto gia' confermato, quindi il
+ * nostro ACK non l'ha sentito. Capita, ma per ACK_PERSI_CICLI cicli di fila
+ * vuol dire che la nostra trasmissione non arriva: dal 13 al 20/10 e'
+ * successo a tutti i cicli, per sei giorni e mezzo.
+ */
+#define SILENZIO_CICLI         2
+#define SILENZIO_MARGINE_SEC   300UL
+#define SONNO_NODO_DEF_SEC     900UL    // finche' il nodo non dice il suo
+#define ACK_PERSI_CICLI        3
 
 // ======================= MQTT ===============================================
 
@@ -58,7 +103,9 @@
 
 #define TOPIC_PONTE    "serra/ponte/stato"    // online/offline (Last Will)
 #define TOPIC_DIAG     "serra/ponte/diag"     // diagnostica del ponte
-#define TOPIC_LOG      "serra/ponte/log"      // eventi testuali
+// Ultima riparazione della radio, con il motivo. Retained: resta leggibile
+// anche giorni dopo, quando il recorder di Home Assistant l'ha gia' scordata.
+#define TOPIC_LOG      "serra/ponte/log"
 
 /*
  * Eco di conferma: il ponte si iscrive a questo topic e ci pubblica un

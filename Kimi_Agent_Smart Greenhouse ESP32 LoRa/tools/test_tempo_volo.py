@@ -12,6 +12,12 @@ Il test controlla anche che le espressioni cercate siano ancora presenti nel
 sorgente: se qualcuno cambia radio.cpp senza aggiornare questo file, il test
 fallisce invece di continuare a promuovere una formula che non esiste piu'.
 
+Lo stesso conto lo fa il ponte, in camera_ponte/radio.cpp, per la guardia
+sugli ACK: dalla 2.5.0 un ACK che la sfora fa resettare la radio, quindi una
+guardia sbagliata per difetto la resetterebbe a ogni risposta. Il test
+verifica che la formula del ponte sia la stessa e che i due config.h abbiano
+gli stessi parametri radio e la stessa guardia.
+
     python tools/test_tempo_volo.py
 """
 
@@ -60,7 +66,28 @@ if mancanti:
         print("  -", a)
     raise SystemExit(1)
 
+# --- la gemella del ponte: stessa formula, stessi parametri -----------------
+
+RADIO_PONTE = os.path.join(RADICE, "camera_ponte", "radio.cpp")
+CONFIG_PONTE = os.path.join(RADICE, "camera_ponte", "config.h")
+
+FORMULA = ATTESE[:6] + ["TX_GUARDIA_X"]
+mancanti = [a for a in FORMULA if a not in leggi(RADIO_PONTE)]
+if mancanti:
+    print("camera_ponte/radio.cpp non contiene piu' la formula del nodo:")
+    for a in mancanti:
+        print("  -", a)
+    raise SystemExit(1)
+
 cfg = leggi(CONFIG)
+cfg_ponte = leggi(CONFIG_PONTE)
+diversi = [n for n in ("LORA_BAND", "LORA_SF", "LORA_BW", "LORA_CR",
+                       "TX_GUARDIA_X", "TX_GUARDIA_MS")
+           if costante(cfg, n) != costante(cfg_ponte, n)]
+if diversi:
+    print("Nodo e ponte non hanno gli stessi valori per:", ", ".join(diversi))
+    raise SystemExit(1)
+
 SF = int(costante(cfg, "LORA_SF"))
 BW = costante(cfg, "LORA_BW")
 CR = int(costante(cfg, "LORA_CR"))       # 5 = coding rate 4/5, cioe' (CR + 4)

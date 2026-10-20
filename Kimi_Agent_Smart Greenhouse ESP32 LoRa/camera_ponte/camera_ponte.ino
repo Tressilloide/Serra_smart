@@ -22,6 +22,8 @@
  *     che non conosce (discovery generica)
  *   - Riconnettersi ad automaticamente a WiFi e MQTT senza mai smettere di
  *     ascoltare la radio
+ *   - Accorgersi da solo che la radio e' finita in uno stato sbagliato, e
+ *     rimetterla in sesto senza aspettare che qualcuno lo riflashi (radio.h)
  *
  *  ---------------------------------------------------------------------------
  *  LIBRERIE NECESSARIE
@@ -37,8 +39,6 @@
 
 #include <WiFi.h>
 #include <PubSubClient.h>
-#include <SPI.h>
-#include <LoRa.h>
 #include <esp_task_wdt.h>
 #include <time.h>
 
@@ -47,6 +47,7 @@
 #include "protocollo.h"
 #include "discovery.h"
 #include "comandi.h"
+#include "radio.h"
 
 #if ABILITA_OTA
   #include <ArduinoOTA.h>
@@ -128,6 +129,21 @@ static uint32_t      ackCmdSeq    = 0;
 static uint32_t      ackCmdTs     = 0;
 static uint32_t      ackCmdMs     = 0;
 static ComandoInCoda ackCmd;
+
+// L'ultimo pacchetto confermato, per accorgersi se il nodo lo ritrasmette
+// (vedi controllaAckPerso()).
+static bool     ackInviatoValido  = false;
+static uint32_t ackInviatoSeq     = 0;
+static uint32_t ackInviatoTs      = 0;
+static bool     ackInviatoTornato = false;   // il nodo l'ha gia' ritrasmesso
+static uint8_t  cicliAckPersi     = 0;
+static uint32_t ackPersi          = 0;       // ritrasmissioni di pacchetti gia' confermati
+
+// Sorveglianza del silenzio del nodo (vedi sorvegliaSilenzio()).
+static uint32_t ultimoDalNodoMs       = 0;   // ultimo pacchetto leggibile del nodo
+static uint32_t riferimentoSilenzioMs = 0;   // da li', o dall'ultimo reset per silenzio
+static uint8_t  resetPerSilenzio      = 0;   // reset di fila senza che il nodo si sia fatto vivo
+static uint32_t sonnoNodoSec          = SONNO_NODO_DEF_SEC;
 
 // ============================ WATCHDOG ======================================
 
@@ -572,76 +588,110 @@ static size_t costruisciJson(const PacchettoKV& pkt, char* out, size_t maxOut,
 // ============================ LORA ==========================================
 
 /*
+ * Il nodo si e' fatto vivo con un pacchetto leggibile: la radio funziona.
+ * Anche un duplicato o un record arretrato vale, il rumore no: da sorda la
+ * radio del ponte continuava a consegnare ogni tanto qualche pacchetto di
+ * rumore, e non deve bastare a sembrare sana.
+ */
+static void segnaNodoVivo(const PacchettoKV& pkt) {
+  ultimoDalNodoMs = riferimentoSilenzioMs = millis();
+  resetPerSilenzio = 0;
+
+  // L'attesa si regola sulla durata del sonno che il nodo dichiara, cosi'
+  // allungandolo da Home Assistant non si scambia il sonno per un guasto.
+  uint32_t slp = pkt.valoreU("slp", 0);
+  if (slp >= 60 && slp <= 3600) sonnoNodoSec = slp;
+}
+
+/*
+ * Riparazione per silenzio: il nodo non si sente da SILENZIO_CICLI risvegli.
+ *
+ * E' la rete di sicurezza per tutto quello che la verifica dei registri non
+ * vede. Fino alla 2.4.0 questo caso aspettava che qualcuno riflashasse il
+ * ponte: il 9/10 la radio e' rimasta sorda 35 ore, l'11/10 53.
+ */
+static void sorvegliaSilenzio() {
+  uint32_t attesa = (SILENZIO_CICLI * sonnoNodoSec + SILENZIO_MARGINE_SEC) * 1000UL;
+  attesa <<= (resetPerSilenzio < 3 ? resetPerSilenzio : 3);
+
+  if (millis() - riferimentoSilenzioMs < attesa) return;
+  riferimentoSilenzioMs = millis();
+  resetPerSilenzio++;
+
+  char det[48];
+  snprintf(det, sizeof(det), "nessun pacchetto del nodo da %lu min",
+           (unsigned long)((millis() - ultimoDalNodoMs) / 60000UL));
+  radioRipara(RIP_SILENZIO, det);
+}
+
+/*
+ * Un ACK e' partito per questo pacchetto: se ora ne arriva un duplicato,
+ * il nodo quell'ACK non l'ha sentito (vedi controllaAckPerso()).
+ */
+static void ricordaAckInviato(uint32_t seq, uint32_t ts) {
+  // Il pacchetto confermato prima non e' tornato indietro: il suo ACK e'
+  // arrivato, e la serie dei cicli con ACK persi si interrompe.
+  if (ackInviatoValido && !ackInviatoTornato) cicliAckPersi = 0;
+
+  ackInviatoValido  = true;
+  ackInviatoSeq     = seq;
+  ackInviatoTs      = ts;
+  ackInviatoTornato = false;
+}
+
+/*
+ * Il nodo ha ritrasmesso un pacchetto che avevamo gia' confermato.
+ *
+ * Una volta ogni tanto e' normale: un disturbo, una collisione. Per
+ * ACK_PERSI_CICLI cicli di fila no. Dal 13 al 20/10 il ponte ha ricevuto
+ * ogni pacchetto e risposto a ognuno, e il nodo non ha mai sentito una sola
+ * risposta: tre tentativi a ciclo, backlog salito fino a 344 record, e
+ * nessuna misura della radio del ponte lo poteva vedere. Lo vede solo chi
+ * guarda cosa succede dopo l'ACK.
+ *
+ * Si conta un ciclo per pacchetto, non per ritrasmissione, e si ripara PRIMA
+ * di rispondere: l'ACK di questo stesso duplicato parte gia' dalla radio
+ * rimessa in sesto.
+ */
+static void controllaAckPerso(uint32_t seq, uint32_t ts) {
+  if (!ackInviatoValido || seq != ackInviatoSeq || ts != ackInviatoTs) return;
+
+  ackPersi++;
+  if (ackInviatoTornato) return;
+  ackInviatoTornato = true;
+
+  if (++cicliAckPersi < ACK_PERSI_CICLI) return;
+  cicliAckPersi = 0;
+
+  char det[48];
+  snprintf(det, sizeof(det), "%u cicli di fila con l'ACK non sentito",
+           (unsigned)ACK_PERSI_CICLI);
+  radioRipara(RIP_ACK_PERSI, det);
+}
+
+/*
  * Costruisce e invia l'ACK. E' il messaggio piu' importante del sistema:
  *   - conferma al nodo che il dato e' arrivato fino al broker
  *   - porta l'ora corrente, con cui la serra corregge il proprio orologio
  *   - porta l'eventuale comando da eseguire
  * Tutto questo senza un solo pacchetto in piu' rispetto a prima.
- */
-/*
- * Tempo di volo di un pacchetto, in millisecondi. Formula del datasheet
- * SX1276/78 paragrafo 4.1.1.7: header esplicito, CRC attivo, low data rate
- * optimization spenta. LORA_CR vale gia' 5, cioe' e' il (CR + 4) della
- * formula. Gemella di quella in serra_nodo/radio.cpp, verificata da
- * tools/test_tempo_volo.py.
- */
-static uint32_t tempoDiVoloMs(size_t lunghezza) {
-  const float tSimbolo = (float)(1UL << LORA_SF) / (float)LORA_BW;   // secondi
-
-  int32_t numeratore   = 8 * (int32_t)lunghezza - 4 * LORA_SF + 28 + 16;
-  int32_t denominatore = 4 * LORA_SF;
-  int32_t simboli = 8;
-  if (numeratore > 0)
-    simboli += ((numeratore + denominatore - 1) / denominatore) * LORA_CR;
-
-  const float preambolo = (8.0f + 4.25f) * tSimbolo;
-  return (uint32_t)((preambolo + simboli * tSimbolo) * 1000.0f) + 1;
-}
-
-/*
- * Trasmette e torna in ascolto, senza attese illimitate.
  *
- * La versione sincrona di LoRa.endPacket() e' un ciclo che aspetta il flag
- * di TxDone senza timeout e senza nutrire il watchdog: sul nodo si e'
- * impiantata piu' volte. Qui si parte in modo asincrono e si chiede a
- * beginPacket() quando il modulo e' di nuovo libero -- risponde 0 finche'
- * trasmette, 1 quando ha finito -- perche' isTransmitting() nella libreria
- * 0.8.0 e' privata. Gli effetti collaterali della chiamata che riesce
- * (standby e puntatori del FIFO azzerati) sono innocui: subito dopo si
- * passa comunque in ricezione.
- */
-static void trasmettiAck(const char* pacchetto) {
-  LoRa.idle();
-  LoRa.beginPacket();
-  LoRa.print(pacchetto);
-  LoRa.endPacket(true);           // asincrona: scrive un registro e torna
-
-  const uint32_t limite = tempoDiVoloMs(strlen(pacchetto)) * (uint32_t)TX_GUARDIA_X
-                        + (uint32_t)TX_GUARDIA_MS;
-  const uint32_t t0     = millis();
-  bool           finita = false;
-
-  while (millis() - t0 < limite) {
-    esp_task_wdt_reset();
-    if (LoRa.beginPacket() == 1) { finita = true; break; }
-    delay(1);
-  }
-
-  if (!finita)
-    Serial.printf("[LoRa] ACK non concluso in %lu ms: il modulo non risponde.\n",
-                  (unsigned long)limite);
-
-  LoRa.receive();                 // subito di nuovo in ascolto
-}
-
-/*
  * seq, ts       : identificano il pacchetto confermato
  * allegaComando : si puo' estrarre un comando nuovo dalla coda
  * ripeti        : comando gia' consegnato da riallegare (ritrasmissione dello
  *                 stesso pacchetto), oppure nullptr
+ *
+ * Ritorna false se l'ACK non e' partito.
  */
-static void inviaAck(uint32_t seq, uint32_t ts, bool allegaComando,
+static bool inviaAck(uint32_t seq, uint32_t ts, bool allegaComando,
                      const ComandoInCoda* ripeti = nullptr) {
+  // Con la radio inservibile non si estrae nessun comando dalla coda: uscito
+  // per un ACK che non puo' partire, sarebbe perso.
+  if (!radioOk()) {
+    Serial.println(F("[LoRa] Radio non disponibile: ACK non inviato."));
+    return false;
+  }
+
   char ack[PROTO_MAX_PAYLOAD + 1];
 
   /*
@@ -685,22 +735,24 @@ static void inviaAck(uint32_t seq, uint32_t ts, bool allegaComando,
     }
   }
 
-  trasmettiAck(ack);
+  if (!radioTrasmetti(ack)) {
+    // La radio e' gia' stata resettata. Il nodo, senza ACK, ritrasmettera':
+    // se c'era un comando, gli verra' riallegato come per un ACK perso.
+    Serial.printf("[LoRa] ACK NON partito: %s\n", ack);
+    return false;
+  }
 
   Serial.printf("[LoRa] ACK -> %s\n", ack);
+  return true;
 }
 
 static void gestisciLoRa() {
-  int sz = LoRa.parsePacket();
-  if (sz <= 0) return;
-
+  // Una sola lettura SPI quando non e' arrivato niente: la radio e' in
+  // ricezione continua e non va riarmata (vedi radio.h).
   char buf[PROTO_MAX_PAYLOAD + 1];
-  int  n = 0;
-  while (LoRa.available() && n < (int)sizeof(buf) - 1) buf[n++] = (char)LoRa.read();
-  buf[n] = '\0';
+  int  n = radioRicevi(buf, sizeof(buf), ultimoRssi, ultimoSnr);
+  if (n <= 0) return;
 
-  ultimoRssi = LoRa.packetRssi();
-  ultimoSnr  = LoRa.packetSnr();
   pacchettiRicevuti++;
 
   Serial.printf("\n[LoRa] #%lu (RSSI %d dBm, SNR %.1f dB, %d byte): %s\n",
@@ -722,6 +774,8 @@ static void gestisciLoRa() {
     return;
   }
 
+  segnaNodoVivo(pkt);
+
   uint32_t seq = pkt.valoreU("s", 0);
   uint32_t ts  = pkt.valoreU("t", 0);
 
@@ -730,6 +784,7 @@ static void gestisciLoRa() {
   // si e' perso l'ACK. Se quell'ACK portava un comando, glielo si riallega.
   if (giaVisto(seq, ts)) {
     Serial.println(F("[LoRa] Duplicato (ACK perso in precedenza): confermo senza ripubblicare."));
+    controllaAckPerso(seq, ts);
     bool stessoPacchetto = ackCmdValido && seq == ackCmdSeq && ts == ackCmdTs &&
                            (millis() - ackCmdMs) < ACK_RIPETIBILE_MS;
     inviaAck(seq, ts, false, stessoPacchetto ? &ackCmd : nullptr);
@@ -806,7 +861,7 @@ static void gestisciLoRa() {
   // --- ACK, con eventuale comando ------------------------------------------
   // Ai record storici NON si allegano comandi: il nodo li invia con una
   // funzione che non li interpreta, quindi il comando andrebbe perso.
-  inviaAck(seq, ts, !storico);
+  if (inviaAck(seq, ts, !storico)) ricordaAckInviato(seq, ts);
 
   // --- Discovery: crea le entita' mancanti, anche per chiavi sconosciute ---
   // DOPO l'ACK: al primo pacchetto dopo l'avvio sono una decina di messaggi
@@ -833,11 +888,12 @@ static void pubblicaDiagnostica() {
   if (millis() - ultimaDiagnostica < DIAG_INTERVALLO_MS) return;
   ultimaDiagnostica = millis();
 
-  // 448 byte: con eco_ko ed eco_ms, e ogni campo alla sua lunghezza massima
-  // teorica (contatori a 4294967295, interi con segno a -2147483648), il JSON
-  // arriva a 423. Chi aggiunge un campo deve rifare il conto: snprintf
-  // troncherebbe la graffa finale e Home Assistant scarterebbe tutto.
-  char payload[448];
+  // 768 byte: con i campi della radio, e ogni campo alla sua lunghezza
+  // massima teorica (contatori a 4294967295, interi con segno a -2147483648,
+  // testi della radio a 47 caratteri), il JSON arriva a 704. Chi aggiunge un
+  // campo deve rifare il conto: snprintf troncherebbe la graffa finale e Home
+  // Assistant scarterebbe tutto.
+  char payload[768];
   snprintf(payload, sizeof(payload),
     "{\"uptime\":%lu,\"pkt\":%lu,\"scartati\":%lu,\"cmd_consegnati\":%lu,"
     "\"riconn_wifi\":%lu,\"riconn_mqtt\":%lu,"
@@ -846,6 +902,9 @@ static void pubblicaDiagnostica() {
     "\"lora_rssi\":%d,\"lora_snr\":%.1f,"
     "\"mqtt_caduta\":%d,\"rssi_caduta\":%d,"
     "\"eco_ko\":%lu,\"eco_ms\":%lu,"
+    "\"radio_ok\":%d,\"radio_rip\":%lu,\"radio_causa\":\"%s\",\"radio_det\":\"%s\","
+    "\"radio_avv\":\"%s\",\"rst_hw\":%d,"
+    "\"ack_persi\":%lu,\"spi_inc\":%lu,\"crc_ko\":%lu,"
     "\"ip\":\"%s\",\"fw\":\"%s\"}",
     (unsigned long)(millis() / 1000UL),
     (unsigned long)pacchettiRicevuti, (unsigned long)pacchettiScartati,
@@ -877,9 +936,56 @@ static void pubblicaDiagnostica() {
     // confermato in tempo. La 2.3.0 li avrebbe confermati al buio, senza
     // sapere se arrivavano: ora il nodo li ritrasmette o li tiene su SD.
     (unsigned long)ecoMancate, (unsigned long)ultimaEcoMs,
+    /*
+     * La radio (vedi radio.h):
+     *   radio_rip    reset fatti per rimetterla in sesto dall'avvio; zero e'
+     *                il caso normale. radio_causa e radio_det dicono perche'
+     *                l'ultimo, compreso il registro trovato alterato
+     *   radio_avv    il primo registro escluso dalla verifica perche' non
+     *                torna nemmeno a reset appena fatto, oppure perche' il
+     *                modulo non parte; vuoto di norma
+     *   rst_hw       1 se il filo di reset funziona, 0 se no, -1 non ancora
+     *                verificato (lo si sa dal primo riavvio senza staccare
+     *                la corrente, per esempio dopo un OTA)
+     *   ack_persi    ritrasmissioni di pacchetti gia' confermati, cioe' ACK
+     *                che il nodo non ha sentito
+     *   spi_inc      letture dei registri smentite dalla rilettura subito
+     *                dopo: disturbi sui fili fra ESP32 e modulo
+     *   crc_ko       pacchetti arrivati con il CRC sbagliato
+     */
+    radioOk() ? 1 : 0, (unsigned long)radioRiparazioni(),
+    radioCausaTesto(radioUltimaCausa()), radioUltimoDettaglio(),
+    radioAvviso(), (int)radioResetHw(),
+    (unsigned long)ackPersi, (unsigned long)radioLettureIncoerenti(),
+    (unsigned long)radioCrcErrati(),
     WiFi.localIP().toString().c_str(), FW_VERSION_PONTE);
 
   mqtt.publish(TOPIC_DIAG, (const uint8_t*)payload, strlen(payload), true);
+}
+
+/*
+ * Ogni riparazione della radio finisce anche su serra/ponte/log, ritenuto,
+ * con il motivo: e' cosi' che si sapra' cosa e' successo anche quando il
+ * recorder di Home Assistant l'avra' dimenticato. Se MQTT e' giu' quando
+ * succede, parte appena torna su: a quel punto conta l'ultima, e il totale
+ * resta nel contatore.
+ */
+static void pubblicaEventoRadio() {
+  static uint32_t pubblicate = 0;
+  const uint32_t n = radioRiparazioni();
+  if (n == pubblicate || !mqtt.connected()) return;
+
+  char payload[320];
+  snprintf(payload, sizeof(payload),
+    "{\"evento\":\"riparazione_radio\",\"n\":%lu,\"causa\":\"%s\",\"det\":\"%s\","
+    "\"radio_ok\":%d,\"rst_hw\":%d,\"avviso\":\"%s\",\"uptime\":%lu,\"ts\":%lu,"
+    "\"fw\":\"%s\"}",
+    (unsigned long)n, radioCausaTesto(radioUltimaCausa()), radioUltimoDettaglio(),
+    radioOk() ? 1 : 0, (int)radioResetHw(), radioAvviso(),
+    (unsigned long)(millis() / 1000UL), (unsigned long)oraCorrente(), FW_VERSION_PONTE);
+
+  if (mqtt.publish(TOPIC_LOG, (const uint8_t*)payload, strlen(payload), true))
+    pubblicate = n;
 }
 
 // ============================ SETUP / LOOP ==================================
@@ -893,22 +999,21 @@ void setup() {
   Serial.println(F("============================================================"));
 
   // --- LoRa: gli stessi identici parametri radio del nodo serra ------------
-  SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI);
-  LoRa.setPins(LORA_NSS, LORA_RST, LORA_DIO0);
-
-  if (!LoRa.begin(LORA_BAND)) {
-    Serial.println(F("[LoRa] ERRORE: modulo non trovato! Riavvio tra 5 s..."));
+  // Se il modulo non risponde il ponte NON si riavvia piu' a ripetizione,
+  // come fino alla 2.4.0: cosi' restavano spenti anche WiFi, MQTT e OTA, e
+  // l'unico modo di aggiornarlo era il cavo. Ora riprova da solo ogni
+  // RADIO_RIPROVA_MS, e intanto Home Assistant vede radio_ok a 0.
+  if (radioAvvia()) {
+    Serial.println(F("[LoRa] In ascolto continuo."));
+  } else {
+    Serial.printf("[LoRa] ERRORE: radio non pronta (%s).\n", radioAvviso());
     Serial.println(F("[LoRa] Controlla cablaggio SPI, NSS=GPIO5, 3,3 V e ANTENNA montata."));
-    delay(5000);
-    ESP.restart();
+    Serial.printf("[LoRa] Riprovo da solo ogni %lu s.\n",
+                  (unsigned long)(RADIO_RIPROVA_MS / 1000UL));
   }
-  LoRa.setSpreadingFactor(LORA_SF);
-  LoRa.setSignalBandwidth(LORA_BW);
-  LoRa.setCodingRate4(LORA_CR);
-  LoRa.setTxPower(LORA_TX_POWER);
-  LoRa.enableCrc();
-  LoRa.receive();
-  Serial.println(F("[LoRa] In ascolto continuo."));
+  if (radioResetHw() == 0)
+    Serial.println(F("[LoRa] ATTENZIONE: il reset hardware non ha effetto: controlla "
+                     "il filo fra RST del modulo e GPIO 14."));
 
   wifiSetup();
 
@@ -949,6 +1054,10 @@ void loop() {
   // non si puo' perdere.
   gestisciLoRa();
 
+  // ...e va tenuta d'occhio, perche' da sola non dice di essersi guastata.
+  radioSorveglia();
+  sorvegliaSilenzio();
+
   wifiMantieni();
   mqttMantieni();
   mqtt.loop();
@@ -958,6 +1067,7 @@ void loop() {
 #endif
 
   pubblicaDiagnostica();
+  pubblicaEventoRadio();
 
   delay(2);                       // un respiro allo stack WiFi
 }

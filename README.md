@@ -277,9 +277,16 @@ Aggiunge quello che la discovery non può fare
   l'umidità si prende dalla notte. La taratura (`tools/calibra_irrigazione.py`)
   usa i dati da agosto e le durate scelte a mano come metro: 120 s a fine
   settembre, 90 a metà ottobre, 50 a novembre, che stanno su una retta,
-  durata = 14,4 s + 3,78 s per kPa·h di domanda. Con l'interruttore *Serra
-  irrigazione adattiva* (spento di default) la durata viene applicata alle
-  6:40.
+  durata = 14,4 s + 3,78 s per kPa·h di domanda (fra 20 e 300 s).
+- **Pulsante *Durata automatica*** (sezione Irrigazione della vista Serra,
+  spento di default). Acceso: il nodo riceve subito la durata consigliata, e
+  poi ogni mattina alle 6:40. Spento: torna la **durata normale**, quella
+  impostata a mano, che Home Assistant ricorda da solo: ogni durata cambiata a
+  mano diventa la nuova durata normale (la riconosce dalla persona che ha
+  fatto la chiamata, non dai valori che riferisce il nodo, che passano da
+  "non disponibile" a ogni riconnessione del ponte). Se il ponte è giù quando
+  lo si spegne, il ripristino aspetta che torni. Non è *Irrigazione
+  automatica*: quella decide **se** irrigare, questo **quanto**.
 - **Previsione per la serra:** dalle previsioni orarie di met.no la massima
   prevista *dentro* la serra (esterna + correzione imparata ogni sera + fino a
   19 °C col sole), la minima della notte, la pioggia; avviso *gelo previsto*
@@ -311,6 +318,11 @@ Aggiunge quello che la discovery non può fare
   dalla temperatura, vetri appannati o brinati, onde dell'antenna in base al
   segnale, gocce dopo l'irrigazione; si gira col dito e un tocco apre il
   dettaglio. three.js è copiato in locale, niente internet necessario.
+  Dalla 1.1 è pensata per l'Echo Show 8: oggetti fermi uniti in poche mesh
+  (da 181 a 17-21 draw call, CPU per fotogramma da 1,8 a 0,4 ms), ombre
+  ricalcolate solo quando il sole si sposta, tre livelli di qualità con
+  discesa automatica sotto i 22 fotogrammi al secondo (`qualita: auto`, il
+  default; si può forzare con `alta`, `media`, `bassa`).
   Sotto, la sezione *Previsione e irrigazione su misura*.
 
   ![La serra in 3D](Kimi_Agent_Smart%20Greenhouse%20ESP32%20LoRa/docs/serra3d-giorno.png)
@@ -394,7 +406,7 @@ essere accodato: ogni campo nuovo va verificato con `tools/test_arretrati.py`.
 |---|---|
 | Firmware in funzione | Nodo **2.5.0**, ponte **2.5.0** (flashato il 20/10/2026, senza riavvii da allora) |
 | Firmware nel repository | Nodo **2.6.0**, ponte **2.6.0**, da flashare: **prima il ponte, poi il nodo** |
-| Package HA | **Installato l'11/11/2026** (backup `packages/serra.yaml.bak-20261111`), con la Panoramica nuova e la card 3D |
+| Package HA | **Installato l'11/11/2026** (backup `packages/serra.yaml.bak-20261111*`), con la Panoramica nuova, il pulsante *Durata automatica* e la card 3D 1.1 |
 | Quota di Home Assistant | Portata da 0 a **1000 m** l'11/11: met.no correggeva le temperature sul livello del mare e le dava 6,0 °C troppo alte |
 | Irrigazione | Automatica alle 12:00 per 50 s, circa 2,0 L; il 4/11 la valvola si è aperta ma sono passati 0,002 L |
 | Collegamento | Dal 30/10 al 10/11 arrivato l'87,2% dei cicli (853 su 978); 24% il 4/11 e 61% il 5/11, buco più lungo 9,3 ore |

@@ -22,17 +22,48 @@
  *  INSTALLAZIONE
  *    /config/www/serra3d/  <- questo file e la cartella vendor/ (three.js r160)
  *    risorsa Lovelace: /local/serra3d/serra-3d-card.js, tipo "module"
- *    card:  type: custom:serra-3d-card   (opzioni: altezza, in pixel)
+ *    card:  type: custom:serra-3d-card
+ *      altezza:   pixel (420)
+ *      qualita:   auto | alta | media | bassa   (auto)
+ *      rotazione: true | false   giro lento quando nessuno tocca (true)
  *
- *  Il rendering gira solo quando la card e' visibile, a 30 fotogrammi al
- *  secondo al massimo: l'Echo Show e i telefoni ringraziano.
+ *  PRESTAZIONI (versione 1.1, per l'Echo Show 8 con la GPU Mali-G72)
+ *    - tutto cio' che non si muove e' unito in poche mesh, con i colori nei
+ *      vertici: da 168 a una trentina di draw call; i tocchi vanno su scatole
+ *      invisibili che ricalcano gli oggetti originali;
+ *    - le ombre si ricalcolano solo quando il sole si sposta, non a ogni
+ *      fotogramma;
+ *    - tre livelli di qualita' (ombre, risoluzione, antialiasing, materiali
+ *      Lambert invece di PBR, particelle). In "auto" i dispositivi touch
+ *      partono da "media", e se la media scende sotto i 22 fotogrammi al
+ *      secondo si scende da soli di un livello; il livello trovato resta
+ *      ricordato nel dispositivo;
+ *    - le etichette si spostano con transform, e solo quando la vista cambia;
+ *    - il rendering gira solo quando la card e' visibile.
+ *
+ *  Misure (Chrome headless con SwiftShader, 960x420 CSS a 1,33 come l'Echo):
+ *    CPU per fotogramma (three.js + comandi WebGL): 1,77 ms -> 0,4 ms
+ *    draw call: 181 -> 21 (alta), 17 (media e bassa)
+ *    disegno in software: 61 ms (1.0) -> 59 alta, 52 media, 13 bassa; in media
+ *    togliere da soli antialiasing, ombre o risoluzione vale ciascuno un terzo.
  * ============================================================================
  */
 
 import * as THREE from './vendor/three.module.min.js';
 import { OrbitControls } from './vendor/OrbitControls.js';
+import { mergeGeometries } from './vendor/BufferGeometryUtils.js';
 
-const VERSIONE = '1.0.0';
+const VERSIONE = '1.1.0';
+
+// Livelli di qualita'. "pixel" e' il tetto del devicePixelRatio, "fps" il
+// ritmo massimo; "lambert" sostituisce i materiali fisici (PBR) con quelli
+// Lambert, molto piu' leggeri per le GPU dei tablet.
+export const QUALITA = {
+  alta:  { nome: 'alta',  ombre: true,  tipoOmbre: THREE.PCFSoftShadowMap, mappa: 1024, pixel: 2,   lambert: false, antialias: true,  pioggia: 700, neve: 600, fps: 30 },
+  media: { nome: 'media', ombre: true,  tipoOmbre: THREE.PCFShadowMap,     mappa: 512,  pixel: 1.5, lambert: true,  antialias: true,  pioggia: 400, neve: 350, fps: 30 },
+  bassa: { nome: 'bassa', ombre: false, tipoOmbre: THREE.BasicShadowMap,   mappa: 256,  pixel: 1,   lambert: true,  antialias: false, pioggia: 200, neve: 200, fps: 30 },
+};
+const SCALA_QUALITA = ['alta', 'media', 'bassa'];
 
 export const ENTITA = {
   temperatura: 'sensor.serra_temperatura',
@@ -53,6 +84,7 @@ export const ENTITA = {
   orarioMin:   'number.serra_orario_irrigazione_minuto',
   sole:        'sun.sun',
   meteo:       'weather.forecast_home',
+  adattiva:    'input_boolean.serra_irrigazione_adattiva',
 };
 
 // Misure della serra in metri. Non sono quelle vere al centimetro: servono
@@ -93,6 +125,7 @@ export function statoDaHass(hass, adesso = Date.now()) {
       ? `${String(num(st(ENTITA.orarioOra))).padStart(2, '0')}:${String(num(st(ENTITA.orarioMin)) ?? 0).padStart(2, '0')}`
       : null,
     stato:       st(ENTITA.stato) ? st(ENTITA.stato).state : null,
+    adattiva:    st(ENTITA.adattiva) ? st(ENTITA.adattiva).state === 'on' : false,
     esito:       st(ENTITA.esito) ? st(ENTITA.esito).state : null,
     barometrica: st(ENTITA.barometrica) ? st(ENTITA.barometrica).state : null,
     // Sole: in gradi, azimut da nord in senso orario
@@ -135,14 +168,23 @@ function casuale(seme) {
 //  Costruzione della scena (nessun DOM: si puo' provare in Node)
 // ---------------------------------------------------------------------------
 
-export function costruisciScena() {
+export function costruisciScena(q = QUALITA.alta) {
   const scena = new THREE.Scene();
-  const parti = {};
+  const parti = { qualita: q.nome };
   const cliccabili = [];          // [oggetto, entita]
   const ancore = {};              // punti 3D a cui appendere le etichette
   const rnd = casuale(1000);      // Baselga di Pine', 1000 m
 
-  const mat = (colore, extra = {}) => new THREE.MeshStandardMaterial({ color: colore, roughness: 0.8, ...extra });
+  // Materiale "fisico" (PBR) in qualita' alta, Lambert negli altri casi: sulla
+  // GPU di un tablet il PBR costa parecchio per ogni pixel, e in questa scena
+  // di riflessi da mostrare non ce ne sono.
+  const mat = (colore, extra = {}) => {
+    if (!q.lambert) return new THREE.MeshStandardMaterial({ color: colore, roughness: 0.8, ...extra });
+    const { roughness, metalness, ...resto } = extra;
+    return new THREE.MeshLambertMaterial({ color: colore, ...resto });
+  };
+  // Oggetti che cambiano o si muovono: restano fuori dall'unione delle mesh.
+  const dinamico = (o) => { o.userData.dinamico = true; return o; };
   const box = (w, h, d, m) => new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m);
   const ombre = (o) => { o.castShadow = true; o.receiveShadow = true; return o; };
 
@@ -151,7 +193,7 @@ export function costruisciScena() {
   scena.add(parti.ambiente);
   parti.sole = new THREE.DirectionalLight(0xfff2d6, 1.6);
   parti.sole.castShadow = true;
-  parti.sole.shadow.mapSize.set(1024, 1024);
+  parti.sole.shadow.mapSize.set(q.mappa, q.mappa);
   const sc = parti.sole.shadow.camera;
   sc.left = -6; sc.right = 6; sc.top = 6; sc.bottom = -6; sc.near = 1; sc.far = 40;
   scena.add(parti.sole, parti.sole.target);
@@ -163,7 +205,7 @@ export function costruisciScena() {
   const prato = new THREE.Mesh(new THREE.CircleGeometry(70, 48), mat(0x5b8c3a, { roughness: 1 }));
   prato.rotation.x = -Math.PI / 2;
   prato.receiveShadow = true;
-  scena.add(prato);
+  scena.add(dinamico(prato));     // diventa bianco con la neve
   parti.prato = prato;
 
   const lago = new THREE.Mesh(new THREE.CircleGeometry(4, 32),
@@ -181,7 +223,7 @@ export function costruisciScena() {
     monte.position.set(Math.cos(a) * r, h / 2 - 0.2, Math.sin(a) * r);
     const neve = new THREE.Mesh(new THREE.ConeGeometry(3.6 + rnd() * 2, h * 0.3, 7), mat(0xf4f7fb, { flatShading: true }));
     neve.position.y = h * 0.36;
-    neve.visible = false;              // d'inverno, quando fa freddo fuori
+    neve.userData.gruppo = 'cime';     // unite in una mesh sola, accesa e spenta insieme
     monte.add(neve);
     parti.cime.push(neve);
     scena.add(monte);
@@ -208,10 +250,11 @@ export function costruisciScena() {
   parti.serra = serra;
 
   const telaio = mat(0xb0bec5, { metalness: 0.6, roughness: 0.35 });
-  const vetro = new THREE.MeshStandardMaterial({
-    color: 0xe8f4ff, transparent: true, opacity: 0.16, roughness: 0.05, metalness: 0.0,
+  const vetro = mat(0xe8f4ff, {
+    transparent: true, opacity: 0.16, roughness: 0.05, metalness: 0.0,
     side: THREE.DoubleSide, depthWrite: false,
   });
+  vetro.userData.condiviso = true;   // colore e opacita' cambiano: si unisce senza colori nei vertici
   parti.vetro = vetro;
 
   const montante = (x1, y1, z1, x2, y2, z2, s = 0.045) => {
@@ -280,7 +323,7 @@ export function costruisciScena() {
     new THREE.MeshBasicMaterial({ color: 0x43a047, transparent: true, opacity: 0.07, depthWrite: false }));
   parti.aria.position.y = H / 2;
   parti.aria.renderOrder = 1;
-  serra.add(parti.aria);
+  serra.add(dinamico(parti.aria));
 
   // --- Aiuole, piante e linea a goccia -------------------------------------------
   const legno = mat(0x8d6e63);
@@ -337,13 +380,13 @@ export function costruisciScena() {
 
   // Gocce: poche sfere che scendono dai gocciolatori dopo un'irrigazione
   const gocciaGeo = new THREE.SphereGeometry(0.018, 6, 4);
-  const gocciaMat = new THREE.MeshStandardMaterial({ color: 0x4fc3f7, roughness: 0.1, transparent: true, opacity: 0.9 });
+  const gocciaMat = mat(0x4fc3f7, { roughness: 0.1, transparent: true, opacity: 0.9 });
   parti.gocce = parti.gocciolatori.map((p, i) => {
     const g = new THREE.Mesh(gocciaGeo, gocciaMat);
     g.position.copy(p);
     g.userData.fase = (i * 0.37) % 1;
     g.visible = false;
-    serra.add(g);
+    serra.add(dinamico(g));
     return g;
   });
 
@@ -373,7 +416,7 @@ export function costruisciScena() {
   parti.led = new THREE.Mesh(new THREE.SphereGeometry(0.014, 8, 6),
     new THREE.MeshBasicMaterial({ color: 0x00e676 }));
   parti.led.position.set(0.09, 1.29, -L / 2 + 0.42);
-  serra.add(parti.led);
+  serra.add(dinamico(parti.led));
 
   const antenna = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.006, 0.32, 6), mat(0x212121));
   antenna.position.set(0.1, 1.5, -L / 2 + 0.36);
@@ -386,7 +429,7 @@ export function costruisciScena() {
     onda.position.set(0.1, 1.66, -L / 2 + 0.36);
     onda.rotation.x = Math.PI / 2;
     onda.userData.fase = i / 3;
-    serra.add(onda);
+    serra.add(dinamico(onda));
     parti.onde.push(onda);
   }
   ancore.antenna = new THREE.Vector3(0.1, 1.95, -L / 2 + 0.36);
@@ -399,7 +442,7 @@ export function costruisciScena() {
     morsetto.position.set(dx, 0.115, 0);
     parti.batteria.add(morsetto);
   }
-  serra.add(parti.batteria);
+  serra.add(dinamico(parti.batteria));     // cambia colore con la tensione
   cliccabili.push([parti.batteria, ENTITA.batteria]);
   ancore.batteria = new THREE.Vector3(-0.45, 0.45, -L / 2 + 0.3);
   const regolatore = ombre(box(0.14, 0.1, 0.04, mat(0x1e88e5)));
@@ -427,17 +470,19 @@ export function costruisciScena() {
   }
   stelle.setAttribute('position', new THREE.Float32BufferAttribute(ps, 3));
   parti.stelle = new THREE.Points(stelle, new THREE.PointsMaterial({ color: 0xffffff, size: 0.35, transparent: true, opacity: 0 }));
-  scena.add(parti.stelle);
+  scena.add(dinamico(parti.stelle));
 
   parti.nuvole = [];
-  const nuvolaMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, transparent: true, opacity: 0.85, flatShading: true });
+  const nuvolaMat = mat(0xffffff, { roughness: 1, transparent: true, opacity: 0.85, flatShading: true });
   for (let i = 0; i < 7; i++) {
-    const n = new THREE.Group();
+    // Quattro sfere sfaccettate unite in una geometria: una draw call a nuvola
+    const pezzi = [];
     for (let j = 0; j < 4; j++) {
-      const b = new THREE.Mesh(new THREE.IcosahedronGeometry(0.8 + rnd() * 0.7, 0), nuvolaMat);
-      b.position.set(j * 0.9 - 1.3, rnd() * 0.4, rnd() * 0.6);
-      n.add(b);
+      const g = new THREE.IcosahedronGeometry(0.8 + rnd() * 0.7, 0);
+      g.translate(j * 0.9 - 1.3, rnd() * 0.4, rnd() * 0.6);
+      pezzi.push(g);
     }
+    const n = dinamico(new THREE.Mesh(mergeGeometries(pezzi), nuvolaMat));
     n.position.set((rnd() - 0.5) * 30, 9 + rnd() * 4, (rnd() - 0.5) * 30);
     n.userData.velocita = 0.15 + rnd() * 0.2;
     scena.add(n);
@@ -445,7 +490,7 @@ export function costruisciScena() {
   }
   parti.nuvolaMat = nuvolaMat;
 
-  const N_PIOGGIA = 700;
+  const N_PIOGGIA = q.pioggia;
   const gp = new THREE.BufferGeometry();
   const posP = new Float32Array(N_PIOGGIA * 6);
   for (let i = 0; i < N_PIOGGIA; i++) {
@@ -455,21 +500,115 @@ export function costruisciScena() {
   gp.setAttribute('position', new THREE.BufferAttribute(posP, 3));
   parti.pioggia = new THREE.LineSegments(gp, new THREE.LineBasicMaterial({ color: 0x9fc3e8, transparent: true, opacity: 0.55 }));
   parti.pioggia.visible = false;
-  scena.add(parti.pioggia);
+  scena.add(dinamico(parti.pioggia));
 
-  const N_NEVE = 600;
+  const N_NEVE = q.neve;
   const gn = new THREE.BufferGeometry();
   const posN = new Float32Array(N_NEVE * 3);
   for (let i = 0; i < N_NEVE; i++) posN.set([(rnd() - 0.5) * 16, rnd() * 10, (rnd() - 0.5) * 16], i * 3);
   gn.setAttribute('position', new THREE.BufferAttribute(posN, 3));
   parti.neve = new THREE.Points(gn, new THREE.PointsMaterial({ color: 0xffffff, size: 0.08 }));
   parti.neve.visible = false;
-  scena.add(parti.neve);
+  scena.add(dinamico(parti.neve));
 
   scena.fog = new THREE.Fog(0xbcd7ef, 30, 110);
   scena.background = new THREE.Color(0x87b8e8);
 
   return { scena, parti, cliccabili, ancore };
+}
+
+// ---------------------------------------------------------------------------
+//  Unione delle mesh statiche
+// ---------------------------------------------------------------------------
+//
+//  Ogni mesh e' una draw call, e la serra appena costruita ne ha piu' di
+//  centocinquanta: ogni foglia, ogni montante, ogni abete. Sulla GPU di un
+//  tablet e' il costo principale. Qui tutto cio' che non si muove e non
+//  cambia colore viene cotto nella posizione finale e unito in una mesh per
+//  tipo di materiale, con il colore di ciascun pezzo scritto nei vertici.
+//
+//  Le mesh unite non si possono piu' toccare una per una: prima di unirle,
+//  per ogni oggetto cliccabile si lascia una scatola invisibile della sua
+//  misura (il Raycaster di three.js colpisce anche gli oggetti nascosti).
+
+function chiaveMateriale(m, mesh) {
+  return [m.type, m.flatShading, m.transparent, m.opacity, m.side, m.depthWrite,
+    m.roughness, m.metalness, mesh.castShadow, mesh.receiveShadow, mesh.renderOrder].join('|');
+}
+
+export function ottimizzaScena(mondo) {
+  const { scena, parti } = mondo;
+  scena.updateMatrixWorld(true);
+
+  // 1. Scatole per i tocchi, finche' gli oggetti esistono ancora
+  mondo.cliccabili = mondo.cliccabili.map(([o, entita]) => {
+    const b = new THREE.Box3().setFromObject(o).expandByScalar(0.05);
+    const dim = b.getSize(new THREE.Vector3()), centro = b.getCenter(new THREE.Vector3());
+    const scatola = new THREE.Mesh(new THREE.BoxGeometry(dim.x, dim.y, dim.z), new THREE.MeshBasicMaterial());
+    scatola.position.copy(centro);
+    scatola.visible = false;
+    scatola.userData.dinamico = true;
+    scena.add(scatola);
+    return [scatola, entita];
+  });
+
+  // 2. Raccolta delle mesh statiche, per tipo di materiale
+  const gruppi = new Map();
+  const visita = (o) => {
+    if (o.userData.dinamico) return;
+    if (o.isMesh) {
+      const m = o.material;
+      const chiave = (o.userData.gruppo ? `g:${o.userData.gruppo}|` : '') +
+                     (m.userData.condiviso ? `c:${m.uuid}` : chiaveMateriale(m, o));
+      if (!gruppi.has(chiave)) gruppi.set(chiave, []);
+      gruppi.get(chiave).push(o);
+    }
+    for (const figlio of o.children) visita(figlio);
+  };
+  visita(scena);
+
+  // 3. Unione: geometrie cotte nella posizione finale, solo posizione e
+  //    normale (niente texture), piu' il colore se il materiale non e' condiviso
+  let prima = 0, dopo = 0;
+  for (const [chiave, mesh] of gruppi) {
+    prima += mesh.length;
+    const m0 = mesh[0].material;
+    const condiviso = !!m0.userData.condiviso;
+    const geo = mesh.map((o) => {
+      const g = (o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone());
+      for (const nome of Object.keys(g.attributes)) if (nome !== 'position' && nome !== 'normal') g.deleteAttribute(nome);
+      g.applyMatrix4(o.matrixWorld);
+      if (!condiviso) {
+        const c = o.material.color, n = g.attributes.position.count;
+        const col = new Float32Array(n * 3);
+        for (let i = 0; i < n; i++) col.set([c.r, c.g, c.b], i * 3);
+        g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+      }
+      return g;
+    });
+    const unita = mergeGeometries(geo);
+    if (!unita) continue;                      // geometrie incompatibili: si lasciano com'erano
+    let materiale = m0;
+    if (!condiviso) {
+      materiale = m0.clone();
+      materiale.color.set(0xffffff);
+      materiale.vertexColors = true;
+    }
+    const nuova = new THREE.Mesh(unita, materiale);
+    nuova.castShadow = mesh.some((o) => o.castShadow);
+    nuova.receiveShadow = mesh.some((o) => o.receiveShadow);
+    nuova.renderOrder = mesh[0].renderOrder;
+    nuova.userData.dinamico = true;           // gia' unita
+    for (const o of mesh) o.parent.remove(o);
+    scena.add(nuova);
+    dopo++;
+    if (chiave.startsWith('g:cime|')) {
+      nuova.visible = false;
+      parti.cime = [nuova];
+    }
+  }
+  parti.unione = { prima, dopo };
+  return mondo;
 }
 
 // ---------------------------------------------------------------------------
@@ -486,7 +625,12 @@ export function applicaStato(mondo, s) {
   const el = THREE.MathUtils.degToRad(Math.max(s.elevazione, -10));
   const az = THREE.MathUtils.degToRad(s.azimut);
   const dir = new THREE.Vector3(Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el));
-  parti.sole.position.copy(dir.multiplyScalar(20));
+  dir.multiplyScalar(20);
+  // Le ombre si ridisegnano solo se il sole si e' spostato (il renderer le
+  // tiene ferme: shadowMap.autoUpdate = false). Il sole fa un grado ogni
+  // quattro minuti: e' un ricalcolo ogni tanto invece che trenta al secondo.
+  if (parti.sole.position.distanceToSquared(dir) > 1e-4) parti.ombreDaRifare = true;
+  parti.sole.position.copy(dir);
 
   const giorno = THREE.MathUtils.clamp((s.elevazione + 4) / 14, 0, 1);   // 0 notte, 1 giorno pieno
   const coperto = THREE.MathUtils.clamp(s.nuvole / 100, 0, 1);
@@ -589,9 +733,24 @@ const fmt = (v, dec, unita) => (v === null || !Number.isFinite(v) ? '—' : `${v
 // comunque, ma non viene registrata.
 const Base = typeof HTMLElement !== 'undefined' ? HTMLElement : class {};
 
+// Il livello di qualita' trovato in "auto" resta ricordato nel dispositivo:
+// l'Echo non deve ripartire ogni volta da un livello che sa di non reggere.
+const CHIAVE_QUALITA = 'serra3d-qualita';
+
+function qualitaIniziale(config) {
+  if (config.qualita && QUALITA[config.qualita]) return config.qualita;
+  try {
+    const ricordata = localStorage.getItem(CHIAVE_QUALITA);
+    if (QUALITA[ricordata]) return ricordata;
+  } catch (e) { /* storage non disponibile: si riparte dalla stima */ }
+  // Tablet e telefoni (puntatore "grossolano", cioe' il dito) partono da media
+  const tocco = typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches;
+  return tocco ? 'media' : 'alta';
+}
+
 class Serra3dCard extends Base {
   setConfig(config) {
-    this._config = { altezza: 420, ...config };
+    this._config = { altezza: 420, qualita: 'auto', rotazione: true, ...config };
     if (this._radice) this._radice.style.height = `${this._config.altezza}px`;
   }
 
@@ -640,7 +799,7 @@ class Serra3dCard extends Base {
         .radice { position: relative; width: 100%; touch-action: none; }
         canvas { display: block; width: 100%; height: 100%; outline: none; }
         .etichetta {
-          position: absolute; transform: translate(-50%, -100%); white-space: nowrap;
+          position: absolute; left: 0; top: 0; will-change: transform; white-space: nowrap;
           padding: 3px 8px; border-radius: 10px; font: 600 12px/1.3 var(--paper-font-body1_-_font-family, sans-serif);
           background: rgba(20, 28, 36, 0.72); color: #fff; cursor: pointer; pointer-events: auto;
           box-shadow: 0 1px 4px rgba(0,0,0,.35); user-select: none;
@@ -676,39 +835,13 @@ class Serra3dCard extends Base {
     this._radice = ombra.querySelector('.radice');
     this._radice.style.height = `${this._config?.altezza ?? 420}px`;
 
-    try {
-      this._renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'low-power' });
-    } catch (e) {
-      this._radice.innerHTML = '<div class="errore">Il browser non supporta WebGL: il modello 3D non si puo\' mostrare.</div>';
-      return;
-    }
-    this._renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    this._renderer.shadowMap.enabled = true;
-    this._renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    this._renderer.outputColorSpace = THREE.SRGBColorSpace;
-    this._radice.prepend(this._renderer.domElement);
-
-    this._mondo = costruisciScena();
+    this._qualita = qualitaIniziale(this._config ?? {});
     this._camera = new THREE.PerspectiveCamera(45, 1, 0.1, 250);
     this._camera.position.set(5.5, 3.6, 6.5);
+    if (!this._preparaVista()) return;
+    this._costruisciMondo();
 
-    this._controlli = new OrbitControls(this._camera, this._renderer.domElement);
-    this._controlli.target.set(0, 1.0, 0);
-    this._controlli.enableDamping = true;
-    this._controlli.minDistance = 2.5;
-    this._controlli.maxDistance = 22;
-    this._controlli.maxPolarAngle = Math.PI / 2 - 0.05;    // mai sotto terra
-    this._controlli.autoRotate = true;
-    this._controlli.autoRotateSpeed = 0.5;
-    this._controlli.addEventListener('start', () => {
-      this._controlli.autoRotate = false;
-      clearTimeout(this._timerRotazione);
-    });
-    this._controlli.addEventListener('end', () => {
-      this._timerRotazione = setTimeout(() => { this._controlli.autoRotate = true; }, 20000);
-    });
-
-    // Etichette HTML agganciate a punti 3D
+    // Etichette HTML agganciate a punti 3D (per nome: il mondo si puo' ricostruire)
     const defs = [
       ['scatola', ENTITA.temperatura, (s) => `🌡️ ${fmt(s.temperatura, 1, ' °C')} · 💧 ${fmt(s.umidita, 0, ' %')}`],
       ['antenna', ENTITA.rssi, (s) => `📶 ${fmt(s.rssi, 0, ' dBm')}`],
@@ -720,25 +853,23 @@ class Serra3dCard extends Base {
       el.className = 'etichetta nascosta';
       el.addEventListener('click', (ev) => { ev.stopPropagation(); this._dettaglio(entita); });
       this._radice.appendChild(el);
-      return { ancora: this._mondo.ancore[ancora], entita, testo, el };
+      return { ancora, entita, testo, el, nascosta: true };
     });
 
-    // Tocco su un oggetto: raggio dalla camera, solo se non si stava girando
+    // Tocco su un oggetto: raggio dalla camera, solo se non si stava girando.
+    // In ascolto sul contenitore e non sulla tela, che cambia se la qualita'
+    // scende fino a ricreare il renderer.
     this._raggio = new THREE.Raycaster();
     let giu = null;
-    this._renderer.domElement.addEventListener('pointerdown', (e) => { giu = [e.clientX, e.clientY]; });
-    this._renderer.domElement.addEventListener('pointerup', (e) => {
-      if (!giu || Math.hypot(e.clientX - giu[0], e.clientY - giu[1]) > 6) return;
+    this._radice.addEventListener('pointerdown', (e) => { giu = [e.clientX, e.clientY]; });
+    this._radice.addEventListener('pointerup', (e) => {
+      if (!giu || e.target !== this._renderer.domElement || Math.hypot(e.clientX - giu[0], e.clientY - giu[1]) > 6) return;
       const r = this._renderer.domElement.getBoundingClientRect();
       const p = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
       this._raggio.setFromCamera(p, this._camera);
-      const oggetti = this._mondo.cliccabili.map(([o]) => o);
-      const colpito = this._raggio.intersectObjects(oggetti, true)[0];
-      if (!colpito) return;
-      for (const [o, entita] of this._mondo.cliccabili) {
-        let x = colpito.object;
-        while (x) { if (x === o) return this._dettaglio(entita); x = x.parent; }
-      }
+      const colpito = this._raggio.intersectObjects(this._mondo.cliccabili.map(([o]) => o), false)[0];
+      const voce = colpito && this._mondo.cliccabili.find(([o]) => o === colpito.object);
+      if (voce) this._dettaglio(voce[1]);
     });
 
     this._ridimensiona = new ResizeObserver(() => this._adatta());
@@ -752,6 +883,90 @@ class Serra3dCard extends Base {
     if (this._hass) { const h = this._hass; this._hass = null; this.hass = h; }
   }
 
+  // Renderer e controlli per il livello di qualita' corrente. Il renderer si
+  // ricrea solo se cambia l'antialiasing, che si sceglie alla nascita.
+  _preparaVista() {
+    const q = QUALITA[this._qualita];
+    if (!this._renderer || this._renderer.userData?.antialias !== q.antialias) {
+      const vecchio = this._renderer;
+      let nuovo;
+      try {
+        nuovo = new THREE.WebGLRenderer({ antialias: q.antialias, powerPreference: 'low-power' });
+      } catch (e) {
+        this._radice.innerHTML = '<div class="errore">Il browser non supporta WebGL: il modello 3D non si puo\' mostrare.</div>';
+        return false;
+      }
+      nuovo.userData = { antialias: q.antialias };
+      nuovo.outputColorSpace = THREE.SRGBColorSpace;
+      if (vecchio) {
+        this._controlli.dispose();
+        vecchio.domElement.replaceWith(nuovo.domElement);
+        vecchio.dispose();
+      } else {
+        this._radice.prepend(nuovo.domElement);
+      }
+      this._renderer = nuovo;
+      this._preparaControlli();
+    }
+    const r = this._renderer;
+    r.setPixelRatio(Math.min(window.devicePixelRatio || 1, q.pixel));
+    r.shadowMap.enabled = q.ombre;
+    r.shadowMap.type = q.tipoOmbre;
+    r.shadowMap.autoUpdate = false;          // si rifanno solo quando il sole si sposta
+    r.shadowMap.needsUpdate = true;
+    return true;
+  }
+
+  _preparaControlli() {
+    const vecchioTarget = this._controlli?.target.clone();
+    const c = new OrbitControls(this._camera, this._renderer.domElement);
+    c.target.copy(vecchioTarget ?? new THREE.Vector3(0, 1.0, 0));
+    c.enableDamping = true;
+    c.minDistance = 2.5;
+    c.maxDistance = 22;
+    c.maxPolarAngle = Math.PI / 2 - 0.05;    // mai sotto terra
+    c.autoRotate = this._config?.rotazione !== false;
+    c.autoRotateSpeed = 0.5;
+    c.addEventListener('start', () => {
+      c.autoRotate = false;
+      clearTimeout(this._timerRotazione);
+    });
+    c.addEventListener('end', () => {
+      if (this._config?.rotazione === false) return;
+      this._timerRotazione = setTimeout(() => { c.autoRotate = true; }, 20000);
+    });
+    c.addEventListener('change', () => { this._etichetteDaSpostare = true; });
+    this._controlli = c;
+  }
+
+  _costruisciMondo() {
+    if (this._mondo) {
+      this._mondo.scena.traverse((o) => {
+        o.geometry?.dispose?.();
+        const m = o.material;
+        if (Array.isArray(m)) m.forEach((x) => x.dispose()); else m?.dispose?.();
+      });
+    }
+    this._mondo = ottimizzaScena(costruisciScena(QUALITA[this._qualita]));
+    if (this._stato) applicaStato(this._mondo, this._stato);
+    this._renderer.shadowMap.needsUpdate = true;
+    this._etichetteDaSpostare = true;
+    this._campioni = [];
+    this._daIgnorare = 45;    // i primi fotogrammi compilano gli shader: non si misurano
+  }
+
+  // In "auto", se la GPU non regge si scende di un livello e lo si ricorda.
+  _scendiDiQualita() {
+    const i = SCALA_QUALITA.indexOf(this._qualita);
+    if (i < 0 || i >= SCALA_QUALITA.length - 1) return;
+    this._qualita = SCALA_QUALITA[i + 1];
+    try { localStorage.setItem(CHIAVE_QUALITA, this._qualita); } catch (e) { /* pazienza */ }
+    console.info(`[serra-3d-card] fotogrammi lenti: qualita' ${this._qualita}`);
+    this._preparaVista();
+    this._costruisciMondo();
+    this._adatta();
+  }
+
   _dettaglio(entityId) {
     this.dispatchEvent(new CustomEvent('hass-more-info', { detail: { entityId }, bubbles: true, composed: true }));
   }
@@ -763,12 +978,14 @@ class Serra3dCard extends Base {
     this._renderer.setSize(w, h, false);
     this._camera.aspect = w / h;
     this._camera.updateProjectionMatrix();
+    this._etichetteDaSpostare = true;
   }
 
   _aggiornaEtichette() {
     const s = this._stato;
     if (!s || !this._etichette) return;
     for (const e of this._etichette) e.el.textContent = e.testo(s);
+    this._etichetteDaSpostare = true;
 
     this._radice.querySelector('.stato').textContent = s.stato ?? '';
     const sotto = [];
@@ -777,23 +994,26 @@ class Serra3dCard extends Base {
     this._radice.querySelector('.sottotitolo').textContent = sotto.join(' · ');
 
     const riga = [];
-    if (s.orario) riga.push(`⏰ irrigazione ${s.orario} per ${fmt(s.durata, 0, ' s')}`);
-    if (s.consigliata !== null) riga.push(`🌱 consigliata ${fmt(s.consigliata, 0, ' s')}`);
+    if (s.orario) riga.push(`⏰ irrigazione ${s.orario} per ${fmt(s.durata, 0, ' s')}${s.adattiva ? ' (automatica)' : ''}`);
+    if (!s.adattiva && s.consigliata !== null) riga.push(`🌱 consigliata ${fmt(s.consigliata, 0, ' s')}`);
     if (s.previsione !== null) riga.push(`☀️ massima prevista in serra ${fmt(s.previsione, 0, ' °C')}`);
     if (s.vpd !== null) riga.push(`VPD ${fmt(s.vpd, 2, ' kPa')}`);
     this._radice.querySelector('.piede .riga').textContent = riga.join('   ');
   }
 
+  // Solo quando la vista cambia, e con transform: niente ricalcolo del layout
+  // della pagina a ogni fotogramma.
   _posizionaEtichette() {
     const w = this._radice.clientWidth, h = this._radice.clientHeight;
     const v = new THREE.Vector3();
     for (const e of this._etichette) {
-      v.copy(e.ancora).project(this._camera);
-      const fuori = v.z > 1 || Math.abs(v.x) > 1.05 || Math.abs(v.y) > 1.05;
-      e.el.classList.toggle('nascosta', fuori || !this._stato);
-      if (!fuori) {
-        e.el.style.left = `${((v.x + 1) / 2) * w}px`;
-        e.el.style.top = `${((1 - v.y) / 2) * h}px`;
+      const ancora = this._mondo.ancore[e.ancora];
+      v.copy(ancora).project(this._camera);
+      const nascosta = v.z > 1 || Math.abs(v.x) > 1.05 || Math.abs(v.y) > 1.05 || !this._stato;
+      if (nascosta !== e.nascosta) { e.el.classList.toggle('nascosta', nascosta); e.nascosta = nascosta; }
+      if (!nascosta) {
+        const x = Math.round(((v.x + 1) / 2) * w), y = Math.round(((1 - v.y) / 2) * h);
+        e.el.style.transform = `translate(${x}px, ${y}px) translate(-50%, -100%)`;
       }
     }
   }
@@ -801,27 +1021,47 @@ class Serra3dCard extends Base {
   _avvia() {
     if (!this._renderer || this._ciclo) return;
     const orologio = new THREE.Clock();
-    let accumulo = 0;
+    let accumulo = 0, ultimo = 0;
     const passo = () => {
       if (!this.isConnected || this._visibile === false || document.hidden) { this._ciclo = null; return; }
       this._ciclo = requestAnimationFrame(passo);
+      const q = QUALITA[this._qualita];
       const dt = Math.min(orologio.getDelta(), 0.1);
       accumulo += dt;
-      if (accumulo < 1 / 30) return;            // 30 fotogrammi al secondo bastano
+      if (accumulo < 1 / q.fps - 0.002) return;
       const t = orologio.elapsedTime;
+      const parti = this._mondo.parti;
       if (this._stato) {
-        // ogni tanto si ricalcolano anche le cose che dipendono dal tempo
-        // (LED, gocce) pur senza nuovi stati da Home Assistant
+        // le cose che dipendono dal tempo (LED, gocce) si aggiornano anche
+        // senza nuovi stati da Home Assistant
         this._stato.daContatto += accumulo;
         this._stato.daIrrigazione += accumulo;
-        this._mondo.parti.ultimoContatto = this._stato.daContatto;
-        this._mondo.parti.irriga = this._stato.daIrrigazione < 180;
+        parti.ultimoContatto = this._stato.daContatto;
+        parti.irriga = this._stato.daIrrigazione < 180;
       }
       anima(this._mondo, t, accumulo);
       accumulo = 0;
+      if (parti.ombreDaRifare) { this._renderer.shadowMap.needsUpdate = true; parti.ombreDaRifare = false; }
       this._controlli.update();
       this._renderer.render(this._mondo.scena, this._camera);
-      this._posizionaEtichette();
+      if (this._etichetteDaSpostare) { this._etichetteDaSpostare = false; this._posizionaEtichette(); }
+
+      // Ritmo reale: con una GPU che non regge, l'intervallo fra due
+      // fotogrammi si allunga. Sotto i 22 al secondo di media su 90
+      // fotogrammi (oltre 45 ms) si scende di qualita'.
+      const ora = performance.now();
+      if (this._config?.qualita === 'auto' && ultimo && ora - ultimo < 500) {
+        if (this._daIgnorare > 0) this._daIgnorare--;
+        else {
+          this._campioni.push(ora - ultimo);
+          if (this._campioni.length >= 90) {
+            const media = this._campioni.reduce((a, b) => a + b, 0) / this._campioni.length;
+            this._campioni = [];
+            if (media > 45) this._scendiDiQualita();
+          }
+        }
+      }
+      ultimo = ora;
     };
     if (!this._sulVisibile) {
       this._sulVisibile = () => { if (!document.hidden) this._avvia(); };

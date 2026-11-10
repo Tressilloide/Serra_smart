@@ -7,14 +7,35 @@ simulati, chiamate "da una persona" (contesto con utente) e "da
 un'automazione", stati del nodo che passano da "non disponibile" come nelle
 riconnessioni del ponte.
 
-Gira dentro il container di Home Assistant, che ha gia' tutto:
+Serve Home Assistant come libreria, che c'e' nel suo container. Sul server
+basta lanciarlo come gli altri test: si copia da solo nel container insieme
+al package del repository e gira li'.
 
-    docker cp homeassistant/packages/serra.yaml homeassistant:/tmp/serra.yaml
-    docker exec -i homeassistant python3 - /tmp/serra.yaml < tools/test_durata_automatica.py
+    python3 tools/test_durata_automatica.py
 
 Non tocca l'installazione vera: nessun file di /config viene letto o scritto.
 """
+import os
+import shutil
+import subprocess
 import sys
+
+try:
+    import homeassistant  # noqa: F401
+except ImportError:
+    QUI = os.path.dirname(os.path.abspath(__file__))
+    pacchetto = os.path.join(QUI, "..", "homeassistant", "packages", "serra.yaml")
+    if not shutil.which("docker"):
+        print("Home Assistant non e' installato qui e manca docker: test saltato.")
+        sys.exit(0)
+    if subprocess.run(["docker", "cp", pacchetto, "homeassistant:/tmp/serra.yaml"]).returncode:
+        print("Container homeassistant non raggiungibile: test saltato.")
+        sys.exit(0)
+    with open(os.path.abspath(__file__), "rb") as f:
+        r = subprocess.run(["docker", "exec", "-i", "homeassistant", "timeout", "150",
+                            "python3", "-", "/tmp/serra.yaml"], stdin=f)
+    subprocess.run(["docker", "exec", "homeassistant", "rm", "-f", "/tmp/serra.yaml"])
+    sys.exit(r.returncode)
 import asyncio, yaml, tempfile, logging
 from homeassistant.core import HomeAssistant, Context
 from homeassistant import loader

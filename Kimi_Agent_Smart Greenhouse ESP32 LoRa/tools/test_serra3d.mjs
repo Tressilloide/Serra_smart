@@ -11,7 +11,7 @@
 
 import * as THREE from '../homeassistant/www/serra3d/vendor/three.module.min.js';
 import {
-  costruisciScena, applicaStato, anima, statoDaHass, coloreTemperatura, ENTITA,
+  costruisciScena, ottimizzaScena, applicaStato, anima, statoDaHass, coloreTemperatura, ENTITA, QUALITA,
 } from '../homeassistant/www/serra3d/serra-3d-card.js';
 
 let errori = 0;
@@ -55,6 +55,53 @@ for (const v of vetri) {
     verifica(Math.abs(Math.abs(v.position.x) - 1.3) < 1e-6 && Math.abs(n.y) < 1e-6, 'parete fuori posto o non verticale');
   }
 }
+
+// --- Unione delle mesh (versione 1.1) ---------------------------------------------
+// Le draw call di una scena sono, in pratica, le mesh visibili. Dopo l'unione
+// devono essere poche, nessun oggetto deve essere sparito e ogni tocco deve
+// ancora arrivare all'entita' giusta.
+const contaMesh = (sc) => { let n = 0; sc.traverse((o) => { if (o.isMesh && o.visible) n++; }); return n; };
+// Le cime innevate si contano a parte: nella scena grezza sono accese, dopo
+// l'unione diventano una mesh sola spenta finche' non nevica.
+const triangoli = (sc) => { let n = 0; sc.traverse((o) => { if (o.isMesh && o.visible && o.userData.gruppo !== 'cime') {
+  const g = o.geometry; n += (g.index ? g.index.count : g.attributes.position.count) / 3; } }); return Math.round(n); };
+for (const livello of ['alta', 'media', 'bassa']) {
+  const grezzo = costruisciScena(QUALITA[livello]);
+  const primaMesh = contaMesh(grezzo.scena), primaTri = triangoli(grezzo.scena);
+  const ott = ottimizzaScena(grezzo);
+  const dopoMesh = contaMesh(ott.scena), dopoTri = triangoli(ott.scena);
+  console.log(`qualita' ${livello}: mesh visibili ${primaMesh} -> ${dopoMesh}, triangoli ${primaTri} -> ${dopoTri}`);
+  verifica(dopoMesh <= 40, `${livello}: ancora ${dopoMesh} mesh visibili dopo l'unione`);
+  verifica(Math.abs(dopoTri - primaTri) <= 2, `${livello}: l'unione ha perso o aggiunto triangoli (${primaTri} -> ${dopoTri})`);
+  verifica(ott.parti.cime.length === 1 && ott.parti.cime[0].visible === false, `${livello}: cime innevate non unite o gia' accese`);
+  const materialeGiusto = livello === 'alta' ? 'MeshStandardMaterial' : 'MeshLambertMaterial';
+  let sbagliati = 0;
+  ott.scena.traverse((o) => { if (o.isMesh && o.visible && /Standard|Lambert/.test(o.material.type) && o.material.type !== materialeGiusto) sbagliati++; });
+  verifica(sbagliati === 0, `${livello}: ${sbagliati} mesh con il materiale sbagliato (atteso ${materialeGiusto})`);
+}
+
+// Tocchi: un raggio verso il centro di ogni scatola deve colpire proprio quella
+const ott = ottimizzaScena(costruisciScena(QUALITA.media));
+ott.scena.updateMatrixWorld(true);
+const camera = new THREE.PerspectiveCamera(45, 1.6, 0.1, 250);
+camera.position.set(5.5, 3.6, 6.5);
+const raggio = new THREE.Raycaster();
+for (const [scatola, entita] of ott.cliccabili) {
+  verifica(scatola.visible === false, `scatola del tocco di ${entita} visibile`);
+  const dir = scatola.position.clone().sub(camera.position).normalize();
+  raggio.set(camera.position, dir);
+  const colpiti = raggio.intersectObjects(ott.cliccabili.map(([o]) => o), false);
+  verifica(colpiti.some((c) => c.object === scatola), `il tocco su ${entita} non arriva alla sua scatola`);
+}
+applicaStato(ott, statoDaHass({ states: {
+  [ENTITA.meteo]: { state: 'snowy', attributes: { cloud_coverage: 90, temperature: -3 } },
+  [ENTITA.sole]: { state: 'above_horizon', attributes: { elevation: 20, azimuth: 180 } } } }, Date.now()));
+verifica(ott.parti.cime[0].visible, 'dopo l\'unione le cime non si imbiancano con la neve');
+verifica(ott.parti.ombreDaRifare === true, 'spostando il sole le ombre non vengono segnate da rifare');
+ott.parti.ombreDaRifare = false;
+applicaStato(ott, statoDaHass({ states: {
+  [ENTITA.sole]: { state: 'above_horizon', attributes: { elevation: 20, azimuth: 180 } } } }, Date.now()));
+verifica(ott.parti.ombreDaRifare === false, 'con il sole fermo le ombre si rifanno lo stesso');
 
 // --- Stati -------------------------------------------------------------------
 const ora = Date.parse('2026-11-11T11:00:00Z');

@@ -87,8 +87,9 @@ def entita_dal_package(percorso):
     pkg = io.open(percorso, encoding="utf-8").read()
     trovate = set()
 
-    # template e mqtt: l'entity_id viene dal name
-    for nome in re.findall(r'-\s+name:\s*"([^"]+)"', pkg):
+    # template, mqtt e statistics: l'entity_id viene dal name (nei sensori
+    # statistics il name non e' la prima chiave del blocco, quindi niente "-")
+    for nome in re.findall(r'^\s*-?\s*name:\s*"([^"]+)"', pkg, re.M):
         trovate.add("sensor." + slug(nome))
         trovate.add("binary_sensor." + slug(nome))
 

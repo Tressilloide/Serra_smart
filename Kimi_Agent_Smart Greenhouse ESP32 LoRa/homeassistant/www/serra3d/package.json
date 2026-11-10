@@ -1,0 +1,4 @@
+{
+  "//": "Serve solo a Node (tools/test_serra3d.mjs) per leggere questi file come moduli ES; il browser lo ignora.",
+  "type": "module"
+}

@@ -606,9 +606,10 @@ automation:
         state: "on"
       - "{{ states('number.serra_durata_irrigazione') not in ['unknown', 'unavailable'] }}"
     actions:
-      # Prima accensione: la base e' ancora al minimo, quindi non e' mai
-      # stata scelta. Si parte dalla durata impostata adesso sul nodo.
-      - if: "{{ states('input_number.serra_durata_base_irrigazione') | int(10) <= 10 }}"
+      # All'accensione dell'interruttore, se la base e' ancora al minimo (mai
+      # scelta), si parte dalla durata impostata adesso sul nodo. Solo li':
+      # alle 00:20 una base di 10 s scelta apposta va rispettata.
+      - if: "{{ trigger.platform == 'state' and states('input_number.serra_durata_base_irrigazione') | int(10) <= 10 }}"
         then:
           - action: input_number.set_value
             target:

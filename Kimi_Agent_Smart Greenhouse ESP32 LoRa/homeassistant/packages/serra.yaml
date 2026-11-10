@@ -86,10 +86,11 @@ input_boolean:
     icon: mdi:thermometer-water
 
 input_number:
-  # La durata "di riferimento", quella giusta per una giornata da 18-26 °C.
-  # Niente "initial": Home Assistant la ricorda fra un riavvio e l'altro. Alla
-  # prima accensione dell'irrigazione adattiva, se e' ancora al minimo, viene
-  # copiata dalla durata impostata in quel momento sul nodo.
+  # La durata "di riferimento": quella giusta per una giornata da 10 kPa·h,
+  # il novembre medio (vedi la taratura nella sezione template). Le altre
+  # giornate scalano in proporzione. Niente "initial": Home Assistant la
+  # ricorda fra un riavvio e l'altro. Finche' resta al minimo (mai scelta)
+  # vale la durata impostata adesso sul nodo.
   serra_durata_base_irrigazione:
     name: Serra durata base irrigazione
     min: 10
@@ -98,6 +99,58 @@ input_number:
     unit_of_measurement: s
     mode: box
     icon: mdi:timer-cog-outline
+
+# ---------------------------------------------------------------------------
+#  Medie mobili per la notte e per la previsione barometrica
+# ---------------------------------------------------------------------------
+#  Alle 6:00 le medie su 8 ore coprono esattamente la notte, dalle 22 alle 6:
+#  il sensore "Serra notte temperatura" le fotografa in quel momento.
+#  average_linear e' la media pesata sul tempo: il recorder salva una riga
+#  solo quando il valore cambia, e una media dei soli campioni darebbe troppo
+#  peso ai momenti in cui la temperatura si muove.
+
+sensor:
+  - platform: statistics
+    name: "Serra temperatura media 8 ore"
+    unique_id: serra_temperatura_media_8h
+    entity_id: sensor.serra_temperatura
+    state_characteristic: average_linear
+    max_age:
+      hours: 8
+    sampling_size: 200
+    precision: 2
+
+  - platform: statistics
+    name: "Serra umidita media 8 ore"
+    unique_id: serra_umidita_media_8h
+    entity_id: sensor.serra_umidita_aria
+    state_characteristic: average_linear
+    max_age:
+      hours: 8
+    sampling_size: 200
+    precision: 1
+
+  - platform: statistics
+    name: "Serra temperatura minima 8 ore"
+    unique_id: serra_temperatura_minima_8h
+    entity_id: sensor.serra_temperatura
+    state_characteristic: value_min
+    max_age:
+      hours: 8
+    sampling_size: 200
+    precision: 2
+
+  # Quanto e' cambiata la pressione nelle ultime 3 ore: la tendenza
+  # barometrica che usa la previsione Zambretti.
+  - platform: statistics
+    name: "Serra pressione variazione 3 ore"
+    unique_id: serra_pressione_variazione_3h
+    entity_id: sensor.serra_pressione
+    state_characteristic: change
+    max_age:
+      hours: 3
+    sampling_size: 100
+    precision: 1
 
 # ---------------------------------------------------------------------------
 #  Sensori MQTT aggiuntivi (quelli che la discovery non genera)
@@ -316,6 +369,323 @@ template:
             {{ ((this.attributes.get('slot') or []) + nuovo)
                | unique | select('>', ((now().timestamp() - 86400) / slp) | int) | sort | list }}
           inizio: "{{ this.attributes.get('inizio') or now().timestamp() | int }}"
+
+  # ===========================================================================
+  #  NOTTE, PREVISIONE E DURATA DELL'IRRIGAZIONE
+  # ===========================================================================
+  #  Come e' stato tarato (novembre 2026, dati da agosto, vedi
+  #  tools/calibra_irrigazione.py che rifa' tutti i conti):
+  #
+  #  1. Perche' la notte. Il BME280 sta in una scatola di plastica dentro la
+  #     serra. Di giorno la scatola al sole fa da forno: massime di 40-50 °C
+  #     anche a ottobre, e un'umidita' relativa che scende perche' l'aria
+  #     dentro si scalda. Di notte, senza sole, scatola e aria sono in
+  #     equilibrio: temperatura e umidita' notturne sono le misure buone. Da
+  #     li' si ricava la PRESSIONE DI VAPORE, cioe' quanta acqua c'e' davvero
+  #     nell'aria, che durante il giorno cambia poco.
+  #
+  #  2. La "domanda" del giorno (kPa·h) e' la somma ora per ora del deficit di
+  #     pressione di vapore fra le 8 e le 18: quanto l'aria "tira" acqua da
+  #     piante e terreno. Si ricostruisce con:
+  #       - la minima della notte, da cui parte la giornata;
+  #       - la massima prevista in serra, a cui arriva verso le 13;
+  #       - la pressione di vapore notturna, che di giorno cresce di circa
+  #         1,2 volte (evaporazione dentro la serra).
+  #     La curva della temperatura e' una campana di 3 ore attorno alle 13.
+  #     Con le massime vere, questo calcolo rifa' la domanda misurata con
+  #     R² = 0,89 su 67 giorni.
+  #
+  #  3. La massima in serra si prevede da met.no: massima esterna fra le 8 e
+  #     le 18 + una correzione + 19,2 °C per la frazione di sole (1 = sereno).
+  #     Con il cielo coperto la serra sta pochi gradi sopra l'esterno, con il
+  #     sole quasi 30. La correzione (8,3 °C al 10/11) la impara il sensore
+  #     "Serra correzione previsione" confrontando ogni sera la massima vera
+  #     con quella prevista al mattino.
+  #     Senza previsione (internet giu'), la domanda si stima dalla sola notte:
+  #     notti tiepide e umide d'autunno vogliono dire nuvole (R² = 0,51).
+  #
+  #  4. Dalla domanda alla durata, con le scelte fatte a mano da Eric come
+  #     metro: 120 s a fine settembre (domanda media 28,5), 90 s a meta'
+  #     ottobre (18,6), 50 s a novembre (10,1). Una retta le attraversa tutte:
+  #         durata = 14,4 s + 3,78 s per kPa·h
+  #     "Serra durata base irrigazione" e' la durata di una giornata da
+  #     10,1 kPa·h, il novembre medio, e scala tutto in proporzione.
+
+  # --- La notte appena passata ------------------------------------------------
+  - triggers:
+      - trigger: time
+        at: "06:00:30"
+    sensor:
+      - name: "Serra notte temperatura"
+        unique_id: serra_notte_temperatura
+        unit_of_measurement: "°C"
+        device_class: temperature
+        state_class: measurement
+        icon: mdi:weather-night
+        state: "{{ states('sensor.serra_temperatura_media_8_ore') | float(none) }}"
+        attributes:
+          giorno: "{{ now().date() | string }}"
+          umidita: "{{ states('sensor.serra_umidita_media_8_ore') | float(none) }}"
+          minima: "{{ states('sensor.serra_temperatura_minima_8_ore') | float(none) }}"
+          # kPa: quanta acqua c'e' nell'aria, la misura che la scatola non falsa
+          pressione_vapore: >-
+            {% set t = states('sensor.serra_temperatura_media_8_ore') | float(none) %}
+            {% set u = states('sensor.serra_umidita_media_8_ore') | float(none) %}
+            {{ (0.6108 * e ** (17.27 * t / (t + 237.3)) * [u, 100] | min / 100) | round(3)
+               if t is not none and u is not none else none }}
+          punto_rugiada: >-
+            {% set t = states('sensor.serra_temperatura_media_8_ore') | float(none) %}
+            {% set u = states('sensor.serra_umidita_media_8_ore') | float(none) %}
+            {% if t is not none and u is not none and u > 0 %}
+              {% set a = log([u, 100] | min / 100) + 17.27 * t / (237.3 + t) %}
+              {{ (237.3 * a / (17.27 - a)) | round(1) }}
+            {% else %}{{ none }}{% endif %}
+
+  # --- Previsione per la serra, da met.no -------------------------------------
+  # Ogni ora chiede a met.no le previsioni orarie e ne ricava, per OGGI fino a
+  # mezzogiorno e per DOMANI dopo, la massima esterna fra le 8 e le 18, la
+  # nuvolosita' media, la pioggia, e la minima della prossima notte; poi le
+  # traduce per la serra. Lo stato e' la massima prevista DENTRO la serra (nel
+  # punto del sensore, scatola compresa: e' il numero che serve al calcolo).
+  #
+  # Attenzione all'altitudine: met.no corregge la temperatura sulla quota di
+  # Home Assistant (Impostazioni -> Sistema -> Generale). Con 0 m, come era
+  # fino al 10/11/2026, le temperature uscivano di 6,0 °C troppo alte: la
+  # quota giusta per Baselga di Pine' e' 1000 m.
+  - triggers:
+      - trigger: time_pattern
+        minutes: 12
+      - trigger: homeassistant
+        event: start
+    actions:
+      - action: weather.get_forecasts
+        target:
+          entity_id: weather.forecast_home
+        data:
+          type: hourly
+        response_variable: previsioni
+        continue_on_error: true
+    sensor:
+      - name: "Serra previsione"
+        unique_id: serra_previsione
+        unit_of_measurement: "°C"
+        device_class: temperature
+        icon: mdi:weather-partly-cloudy
+        availability: "{{ previsioni is defined and 'weather.forecast_home' in previsioni }}"
+        state: >-
+          {% set f = previsioni['weather.forecast_home'].forecast %}
+          {% set g = (now() if now().hour < 12 else now() + timedelta(days=1)).date() %}
+          {% set ns = namespace(tmax=none, nuv=0, n=0) %}
+          {% for x in f %}
+            {% set t = as_local(as_datetime(x.datetime)) %}
+            {% if t.date() == g and 8 <= t.hour < 18 %}
+              {% set ns.tmax = x.temperature if ns.tmax is none else [ns.tmax, x.temperature] | max %}
+              {% set ns.nuv = ns.nuv + (x.cloud_coverage | default(50, true)) %}
+              {% set ns.n = ns.n + 1 %}
+            {% endif %}
+          {% endfor %}
+          {% set k = states('sensor.serra_correzione_previsione') | float(8.3) %}
+          {% if ns.n > 0 %}
+            {{ (ns.tmax + k + 19.2 * (1 - ns.nuv / ns.n / 100)) | round(1) }}
+          {% else %}{{ none }}{% endif %}
+        attributes:
+          giorno: "{{ ((now() if now().hour < 12 else now() + timedelta(days=1)).date()) | string }}"
+          tmax_fuori: >-
+            {% set f = previsioni['weather.forecast_home'].forecast %}
+            {% set g = (now() if now().hour < 12 else now() + timedelta(days=1)).date() %}
+            {% set ns = namespace(tmax=none) %}
+            {% for x in f %}
+              {% set t = as_local(as_datetime(x.datetime)) %}
+              {% if t.date() == g and 8 <= t.hour < 18 %}
+                {% set ns.tmax = x.temperature if ns.tmax is none else [ns.tmax, x.temperature] | max %}
+              {% endif %}
+            {% endfor %}
+            {{ ns.tmax }}
+          sole: >-
+            {% set f = previsioni['weather.forecast_home'].forecast %}
+            {% set g = (now() if now().hour < 12 else now() + timedelta(days=1)).date() %}
+            {% set ns = namespace(nuv=0, n=0) %}
+            {% for x in f %}
+              {% set t = as_local(as_datetime(x.datetime)) %}
+              {% if t.date() == g and 8 <= t.hour < 18 %}
+                {% set ns.nuv = ns.nuv + (x.cloud_coverage | default(50, true)) %}
+                {% set ns.n = ns.n + 1 %}
+              {% endif %}
+            {% endfor %}
+            {{ (1 - ns.nuv / ns.n / 100) | round(2) if ns.n > 0 else none }}
+          pioggia_mm: >-
+            {% set f = previsioni['weather.forecast_home'].forecast %}
+            {% set g = (now() if now().hour < 12 else now() + timedelta(days=1)).date() %}
+            {% set ns = namespace(mm=0) %}
+            {% for x in f %}
+              {% set t = as_local(as_datetime(x.datetime)) %}
+              {% if t.date() == g and 8 <= t.hour < 18 %}
+                {% set ns.mm = ns.mm + (x.precipitation | default(0, true)) %}
+              {% endif %}
+            {% endfor %}
+            {{ ns.mm | round(1) }}
+          # La prossima notte, dalle 20 alle 8 (o quella in corso, prima delle 8).
+          # In serra di notte si sta circa 1 °C sopra l'esterno (misurato
+          # sulle notti di fine ottobre e novembre).
+          tmin_serra_notte: >-
+            {% set f = previsioni['weather.forecast_home'].forecast %}
+            {% set inizio = today_at('20:00') - (timedelta(days=1) if now().hour < 8 else timedelta(0)) %}
+            {% set ns = namespace(tmin=none) %}
+            {% for x in f %}
+              {% set t = as_local(as_datetime(x.datetime)) %}
+              {% if inizio <= t < inizio + timedelta(hours=12) and t >= now() - timedelta(hours=1) %}
+                {% set ns.tmin = x.temperature if ns.tmin is none else [ns.tmin, x.temperature] | min %}
+              {% endif %}
+            {% endfor %}
+            {{ (ns.tmin + 1.0) | round(1) if ns.tmin is not none else none }}
+
+  # --- La correzione della previsione, imparata giorno per giorno ------------
+  # Alle 7 si annota la massima prevista per oggi, alle 21 la si confronta
+  # con quella vera e si sposta la correzione di un quarto dell'errore: in
+  # una settimana si adatta a un cambio di stagione, a una scatola spostata
+  # o a una quota sbagliata, senza farsi trascinare da una giornata strana.
+  - triggers:
+      - trigger: time
+        at: "07:00:00"
+        id: mattina
+      - trigger: time
+        at: "21:00:00"
+        id: sera
+    sensor:
+      - name: "Serra correzione previsione"
+        unique_id: serra_correzione_previsione
+        unit_of_measurement: "°C"
+        icon: mdi:tune-variant
+        state: >-
+          {% set k = this.state | float(8.3) %}
+          {% set vera = states('sensor.serra_temperatura_massima_oggi') | float(none) %}
+          {% set prevista = this.attributes.get('prevista') %}
+          {% if trigger.id == 'sera' and this.attributes.get('giorno') == now().date() | string
+                and prevista is number and vera is not none and vera < 80 %}
+            {% set k = k + 0.25 * (vera - prevista) %}
+          {% endif %}
+          {{ ([[k, -5] | max, 25] | min) | round(2) }}
+        attributes:
+          giorno: >-
+            {{ now().date() | string if trigger.id == 'mattina' else 'appreso' }}
+          prevista: >-
+            {% set p = states('sensor.serra_previsione') | float(none) %}
+            {{ p if trigger.id == 'mattina' and state_attr('sensor.serra_previsione', 'giorno') == now().date() | string
+               else this.attributes.get('prevista') }}
+          ultimo_errore: >-
+            {% set vera = states('sensor.serra_temperatura_massima_oggi') | float(none) %}
+            {% set prevista = this.attributes.get('prevista') %}
+            {{ (vera - prevista) | round(1) if trigger.id == 'sera' and prevista is number and vera is not none
+               else this.attributes.get('ultimo_errore') }}
+
+  - sensor:
+      # --- Previsione barometrica (Zambretti), senza internet ------------------
+      # Il metodo dei barometri Negretti & Zambra: pressione ridotta al livello
+      # del mare, tendenza delle ultime 3 ore e stagione danno una di 26 frasi.
+      # Non sa niente di nuvole o vento, ma vede arrivare una perturbazione con
+      # qualche ora di anticipo e non ha bisogno di nessuno.
+      #
+      # Quota di riduzione 898 m e non 1000: confrontata per 10 giorni con la
+      # pressione al livello del mare di met.no, il BME280 si comporta come se
+      # fosse a 898 m (scarto di 7 m). Puo' essere la quota vera della serra o
+      # un errore di taratura del sensore di circa 11 hPa; per la previsione
+      # conta solo che i due numeri tornino.
+      - name: "Serra previsione barometrica"
+        unique_id: serra_previsione_barometrica
+        icon: mdi:weather-cloudy-clock
+        availability: "{{ states('sensor.serra_pressione') | is_number }}"
+        state: >-
+          {% set p = states('sensor.serra_pressione') | float %}
+          {% set dp = states('sensor.serra_pressione_variazione_3_ore') | float(0) %}
+          {% set t = state_attr('weather.forecast_home', 'temperature') | float(8) %}
+          {% set p0 = p * (1 - 0.0065 * 898 / (t + 0.0065 * 898 + 273.15)) ** -5.257 %}
+          {% set estate = 4 <= now().month <= 9 %}
+          {% set trend = 'su' if dp > 1.6 else ('giu' if dp < -1.6 else 'stabile') %}
+          {% set pz = p0 + (7 if trend == 'su' and estate else 0) - (7 if trend == 'giu' and not estate else 0) %}
+          {% set i = ([[((pz - 950) / (100 / 22)) | int, 0] | max, 21] | min) %}
+          {% set tabella = {
+               'su':      [25,25,25,24,24,19,16,12,11,9,8,6,5,2,1,1,0,0,0,0,0,0],
+               'stabile': [25,25,25,25,25,25,23,23,22,18,15,13,10,4,1,1,0,0,0,0,0,0],
+               'giu':     [25,25,25,25,25,25,25,25,23,23,21,20,17,14,7,3,1,1,1,0,0,0]} %}
+          {% set frasi = ["Bel tempo stabile", "Bel tempo", "In miglioramento, poi bello",
+               "Bello, tende a guastarsi", "Bello, possibili rovesci", "Discreto, in miglioramento",
+               "Discreto, rovesci al mattino", "Discreto, rovesci piu' tardi",
+               "Rovesci al mattino, poi migliora", "Variabile, in miglioramento",
+               "Discreto, probabili rovesci", "Piuttosto instabile, schiarite piu' tardi",
+               "Instabile, probabile miglioramento", "Rovesci con schiarite",
+               "Rovesci, sempre piu' instabile", "Variabile, qualche pioggia",
+               "Instabile, brevi schiarite", "Instabile, pioggia piu' tardi",
+               "Instabile, qualche pioggia", "Molto instabile", "Piogge, in peggioramento",
+               "Pioggia a tratti, molto instabile", "Pioggia frequente", "Pioggia, molto instabile",
+               "Tempesta, possibile miglioramento", "Tempesta, molta pioggia"] %}
+          {{ frasi[tabella[trend][i]] }}
+        attributes:
+          pressione_livello_mare: >-
+            {% set p = states('sensor.serra_pressione') | float(0) %}
+            {% set t = state_attr('weather.forecast_home', 'temperature') | float(8) %}
+            {{ (p * (1 - 0.0065 * 898 / (t + 0.0065 * 898 + 273.15)) ** -5.257) | round(1) }}
+          tendenza: >-
+            {% set dp = states('sensor.serra_pressione_variazione_3_ore') | float(0) %}
+            {{ 'in aumento' if dp > 1.6 else ('in calo' if dp < -1.6 else 'stabile') }}
+          variazione_3_ore: "{{ states('sensor.serra_pressione_variazione_3_ore') | float(0) }}"
+
+      # --- La durata consigliata per oggi --------------------------------------
+      # Sempre calcolata e visibile, anche con l'irrigazione adattiva spenta:
+      # si puo' guardare per qualche giorno cosa farebbe prima di accenderla.
+      - name: "Serra durata irrigazione consigliata"
+        unique_id: serra_durata_irrigazione_consigliata
+        unit_of_measurement: "s"
+        icon: mdi:timer-sand-complete
+        availability: >-
+          {{ states('sensor.serra_notte_temperatura') | is_number
+             and state_attr('sensor.serra_notte_temperatura', 'pressione_vapore') is number }}
+        state: >-
+          {% set base = states('input_number.serra_durata_base_irrigazione') | float(10) %}
+          {% set base = base if base > 10 else states('number.serra_durata_irrigazione') | float(50) %}
+          {% set tn = states('sensor.serra_notte_temperatura') | float %}
+          {% set un = state_attr('sensor.serra_notte_temperatura', 'umidita') | float(80) %}
+          {% set en = state_attr('sensor.serra_notte_temperatura', 'pressione_vapore') | float %}
+          {% set tmin = state_attr('sensor.serra_notte_temperatura', 'minima') | float(tn) %}
+          {% set tmax = states('sensor.serra_previsione') | float(none) %}
+          {% if tmax is not none and tmax > tmin %}
+            {% set ns = namespace(d=0) %}
+            {% for h in range(8, 18) %}
+              {% set f = [cos(pi * (h + 0.5 - 13) / 6), 0] | max %}
+              {% set th = tmin + (tmax - tmin) * f %}
+              {% set ns.d = ns.d + [0.6108 * e ** (17.27 * th / (th + 237.3)) - 1.2 * en, 0] | max %}
+            {% endfor %}
+            {% set d = 1.1 * ns.d %}
+          {% else %}
+            {% set d = [[102.4 - 0.619 * tn - 1.04 * un, 0] | max, 45] | min %}
+          {% endif %}
+          {% set durata = base * (14.4 + 3.78 * d) / (14.4 + 3.78 * 10.1) %}
+          {% set durata = ((durata / 10) | round(0) * 10) %}
+          {{ ([[durata, [10, 0.4 * base] | max] | max, [600, 3 * base] | min] | min) | int }}
+        attributes:
+          domanda_kpa_h: >-
+            {% set tn = states('sensor.serra_notte_temperatura') | float(0) %}
+            {% set un = state_attr('sensor.serra_notte_temperatura', 'umidita') | float(80) %}
+            {% set en = state_attr('sensor.serra_notte_temperatura', 'pressione_vapore') | float(0) %}
+            {% set tmin = state_attr('sensor.serra_notte_temperatura', 'minima') | float(tn) %}
+            {% set tmax = states('sensor.serra_previsione') | float(none) %}
+            {% if tmax is not none and tmax > tmin %}
+              {% set ns = namespace(d=0) %}
+              {% for h in range(8, 18) %}
+                {% set f = [cos(pi * (h + 0.5 - 13) / 6), 0] | max %}
+                {% set th = tmin + (tmax - tmin) * f %}
+                {% set ns.d = ns.d + [0.6108 * e ** (17.27 * th / (th + 237.3)) - 1.2 * en, 0] | max %}
+              {% endfor %}
+              {{ (1.1 * ns.d) | round(1) }}
+            {% else %}
+              {{ ([[102.4 - 0.619 * tn - 1.04 * un, 0] | max, 45] | min) | round(1) }}
+            {% endif %}
+          fonte: >-
+            {% set tmax = states('sensor.serra_previsione') | float(none) %}
+            {{ 'notte + previsione met.no' if tmax is not none else 'solo notte (previsione non disponibile)' }}
+          base: >-
+            {% set base = states('input_number.serra_durata_base_irrigazione') | float(10) %}
+            {{ (base if base > 10 else states('number.serra_durata_irrigazione') | float(50)) | int }}
+          notte_del: "{{ state_attr('sensor.serra_notte_temperatura', 'giorno') }}"
 
 # ---------------------------------------------------------------------------
 #  Automazioni
@@ -576,27 +946,47 @@ automation:
             modulo: il modulo con level shifter vuole 5 V, non 3,3 V.
           notification_id: serra_microsd
 
-  # --- Irrigazione adattiva --------------------------------------------------
-  # Ogni notte regola la durata dell'irrigazione sulla temperatura massima
-  # di ieri in serra, partendo dalla "durata base" (quella giusta per una
-  # giornata da 18-26 °C):
-  #
-  #     massima di ieri   < 10   10-18   18-26   26-32   32-38   >= 38 °C
-  #     durata            x0,5   x0,7    x1,0    x1,3    x1,6    x2,0
-  #
-  # arrotondata alla decina di secondi e tenuta fra 10 e 600 s; il nodo
-  # applica comunque i suoi tetti (900 s, 4 irrigazioni al giorno, 30 minuti
-  # fra una e l'altra). Gira alle 00:20, cosi' il comando arriva al nodo
-  # entro un risveglio anche con l'irrigazione programmata di primo mattino.
-  # Si accende e si spegne con "Serra irrigazione adattiva"; da spenta, la
-  # durata resta quella impostata a mano.
-  - id: serra_irrigazione_adattiva
-    alias: "Serra - Irrigazione adattiva"
-    description: "Regola la durata dell'irrigazione sulla temperatura massima di ieri"
+  # --- Gelo previsto stanotte ------------------------------------------------
+  # Un avviso PRIMA, non durante: alle 18:30, se la minima prevista in serra
+  # per la notte (esterna di met.no + 1 °C) scende sotto 1 °C, c'e' ancora
+  # luce per coprire le piante o svuotare i tubi.
+  - id: serra_gelo_previsto
+    alias: "Serra - Gelo previsto stanotte"
+    description: "La previsione dice che stanotte in serra si va sotto 1 °C"
     mode: single
     triggers:
       - trigger: time
-        at: "00:20:00"
+        at: "18:30:00"
+    conditions:
+      - "{{ state_attr('sensor.serra_previsione', 'tmin_serra_notte') is number }}"
+      - "{{ state_attr('sensor.serra_previsione', 'tmin_serra_notte') < 1.0 }}"
+    actions:
+      - action: persistent_notification.create
+        data:
+          title: "Serra: gelo previsto stanotte"
+          message: >-
+            Stanotte in serra si prevedono circa
+            {{ state_attr('sensor.serra_previsione', 'tmin_serra_notte') }} °C
+            (minima esterna prevista + 1 °C). Copri le piante sensibili e, se
+            l'impianto resta pieno d'acqua, valuta di svuotare i tubi.
+          notification_id: serra_gelo_previsto
+
+  # --- Irrigazione adattiva --------------------------------------------------
+  # Alle 6:40, dopo la fotografia della notte (6:00) e prima di qualunque
+  # irrigazione di giornata, porta la durata sul nodo a quella di "Serra
+  # durata irrigazione consigliata" (vedi il commento grande nella sezione
+  # template). Il comando arriva al nodo entro un risveglio, cioe' entro le
+  # 6:55: con l'irrigazione programmata prima di quell'ora vale dal giorno
+  # dopo. Si accende e si spegne con "Serra irrigazione adattiva"; da spenta,
+  # la durata resta quella impostata a mano, e la consigliata si puo'
+  # comunque guardare.
+  - id: serra_irrigazione_adattiva
+    alias: "Serra - Irrigazione adattiva"
+    description: "Regola la durata dell'irrigazione su notte appena passata e previsione"
+    mode: single
+    triggers:
+      - trigger: time
+        at: "06:40:00"
       - trigger: state
         entity_id: input_boolean.serra_irrigazione_adattiva
         to: "on"
@@ -604,28 +994,27 @@ automation:
       - condition: state
         entity_id: input_boolean.serra_irrigazione_adattiva
         state: "on"
-      - "{{ states('number.serra_durata_irrigazione') not in ['unknown', 'unavailable'] }}"
+      - "{{ states('number.serra_durata_irrigazione') | is_number }}"
     actions:
       # All'accensione dell'interruttore, se la base e' ancora al minimo (mai
       # scelta), si parte dalla durata impostata adesso sul nodo. Solo li':
-      # alle 00:20 una base di 10 s scelta apposta va rispettata.
+      # alle 6:40 una base di 10 s scelta apposta va rispettata.
       - if: "{{ trigger.platform == 'state' and states('input_number.serra_durata_base_irrigazione') | int(10) <= 10 }}"
         then:
           - action: input_number.set_value
             target:
               entity_id: input_number.serra_durata_base_irrigazione
             data:
-              value: "{{ [states('number.serra_durata_irrigazione') | int(50), 10] | max }}"
-      - variables:
-          tmax: "{{ state_attr('sensor.serra_temperatura_massima_oggi', 'ieri') }}"
+              value: "{{ [states('number.serra_durata_irrigazione') | int(50), 20] | max }}"
+          - delay: "00:00:02"     # il sensore consigliato si ricalcola sulla base nuova
       - condition: template
-        value_template: "{{ tmax is number }}"
+        value_template: "{{ states('sensor.serra_durata_irrigazione_consigliata') | is_number }}"
       - variables:
-          base: "{{ states('input_number.serra_durata_base_irrigazione') | float(50) }}"
-          fattore: "{{ 0.5 if tmax < 10 else 0.7 if tmax < 18 else 1.0 if tmax < 26 else 1.3 if tmax < 32 else 1.6 if tmax < 38 else 2.0 }}"
-          durata: "{{ ([[(base * fattore / 10) | round(0) * 10, 10] | max, 600] | min) | int }}"
+          durata: "{{ states('sensor.serra_durata_irrigazione_consigliata') | int }}"
           attuale: "{{ states('number.serra_durata_irrigazione') | int(0) }}"
-      - if: "{{ durata != attuale }}"
+          domanda: "{{ state_attr('sensor.serra_durata_irrigazione_consigliata', 'domanda_kpa_h') }}"
+          fonte: "{{ state_attr('sensor.serra_durata_irrigazione_consigliata', 'fonte') }}"
+      - if: "{{ (durata - attuale) | abs >= 10 }}"
         then:
           - action: number.set_value
             target:
@@ -636,7 +1025,8 @@ automation:
             data:
               title: "Serra: durata irrigazione regolata"
               message: >-
-                Ieri in serra la massima e' stata di {{ tmax }} °C: l'irrigazione
-                passa da {{ attuale }} a {{ durata }} s (base {{ base | int }} s, x{{ fattore }}).
-                Il nodo applica il cambio al prossimo risveglio.
+                Notte a {{ states('sensor.serra_notte_temperatura') }} °C e
+                {{ state_attr('sensor.serra_notte_temperatura', 'umidita') }} %, massima prevista
+                in serra {{ states('sensor.serra_previsione') }} °C: domanda di {{ domanda }} kPa·h
+                ({{ fonte }}). L'irrigazione passa da {{ attuale }} a {{ durata }} s.
               notification_id: serra_adattiva

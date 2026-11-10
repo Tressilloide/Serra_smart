@@ -268,10 +268,23 @@ Aggiunge quello che la discovery non può fare
   - **Temperatura massima e minima di oggi**, con l'ora e l'estremo di ieri.
   - **Cicli ricevuti 24h**: la percentuale dei risvegli attesi che hanno
     lasciato un dato, in tempo reale o recuperato dallo storico.
-- **Irrigazione adattiva** (interruttore *Serra irrigazione adattiva*, spento
-  di default): alle 00:20 regola la durata sul nodo in base alla massima di
-  ieri, da ×0,5 sotto i 10 °C a ×2 oltre i 38 °C, partendo da una *durata
-  base* regolabile.
+- **Irrigazione su misura** (dall'11/11/2026): ogni mattina alle 6:00 il
+  package fotografa la notte appena passata (temperatura e umidità medie
+  22-6, minima, pressione di vapore) e calcola la **durata consigliata** per
+  la giornata, combinandola con la massima prevista in serra. Il BME280 sta
+  in una scatola di plastica che di giorno fa da forno (massime di 40-50 °C
+  anche a ottobre), mentre di notte è in equilibrio con l'aria: per questo
+  l'umidità si prende dalla notte. La taratura (`tools/calibra_irrigazione.py`)
+  usa i dati da agosto e le durate scelte a mano come metro: 120 s a fine
+  settembre, 90 a metà ottobre, 50 a novembre, che stanno su una retta,
+  durata = 14,4 s + 3,78 s per kPa·h di domanda. Con l'interruttore *Serra
+  irrigazione adattiva* (spento di default) la durata viene applicata alle
+  6:40.
+- **Previsione per la serra:** dalle previsioni orarie di met.no la massima
+  prevista *dentro* la serra (esterna + correzione imparata ogni sera + fino a
+  19 °C col sole), la minima della notte, la pioggia; avviso *gelo previsto*
+  alle 18:30. Più un **barometro Zambretti** dal BME280, che funziona anche
+  senza internet.
 - **Automazioni di allarme:**
 
   | Allarme | Quando |
@@ -290,6 +303,17 @@ Aggiunge quello che la discovery non può fare
   server le inoltra anche su Telegram.
 
 ### 6.3 Dashboard
+
+- La vista *Serra* della Panoramica si apre con il **modello 3D
+  interattivo** (`custom:serra-3d-card`, sorgente in
+  [`homeassistant/www/serra3d/`](Kimi_Agent_Smart%20Greenhouse%20ESP32%20LoRa/homeassistant/www/serra3d)):
+  sole vero da `sun.sun`, pioggia/neve/nebbia/nuvole da met.no, aria colorata
+  dalla temperatura, vetri appannati o brinati, onde dell'antenna in base al
+  segnale, gocce dopo l'irrigazione; si gira col dito e un tocco apre il
+  dettaglio. three.js è copiato in locale, niente internet necessario.
+  Sotto, la sezione *Previsione e irrigazione su misura*.
+
+  ![La serra in 3D](Kimi_Agent_Smart%20Greenhouse%20ESP32%20LoRa/docs/serra3d-giorno.png)
 
 - In uso: la **Panoramica** di HA, rifatta il 26/10/2026 per telefono ed Echo
   Show 8, con una vista *Casa* e una vista *Serra* (schema dell'impianto con
@@ -370,7 +394,8 @@ essere accodato: ogni campo nuovo va verificato con `tools/test_arretrati.py`.
 |---|---|
 | Firmware in funzione | Nodo **2.5.0**, ponte **2.5.0** (flashato il 20/10/2026, senza riavvii da allora) |
 | Firmware nel repository | Nodo **2.6.0**, ponte **2.6.0**, da flashare: **prima il ponte, poi il nodo** |
-| Package HA nel repository | Riallineato a quello del server (stessi id, massima/minima) più le novità del §6.2; **non ancora installato** |
+| Package HA | **Installato l'11/11/2026** (backup `packages/serra.yaml.bak-20261111`), con la Panoramica nuova e la card 3D |
+| Quota di Home Assistant | Portata da 0 a **1000 m** l'11/11: met.no correggeva le temperature sul livello del mare e le dava 6,0 °C troppo alte |
 | Irrigazione | Automatica alle 12:00 per 50 s, circa 2,0 L; il 4/11 la valvola si è aperta ma sono passati 0,002 L |
 | Collegamento | Dal 30/10 al 10/11 arrivato l'87,2% dei cicli (853 su 978); 24% il 4/11 e 61% il 5/11, buco più lungo 9,3 ore |
 | Batteria | 13,0-14,5 V, nessun segno di calo |

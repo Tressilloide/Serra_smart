@@ -66,6 +66,13 @@ ritrasmesso porta in testa il marcatore `bk=1` (dal firmware del nodo 2.5.0):
 GH1;bk=1;v=2;s=<seq>;t=<epoch>;<chiave>=<valore>;...
 ```
 
+Dal firmware 2.6.0, se la microSD manca o rifiuta la scrittura, la stessa
+riga aspetta nella **riserva in RAM RTC** del nodo (`serra_nodo/riserva.h`),
+senza i campi di configurazione `sAuto`, `sOra`, `sMin`, `sDur`, `sSoil`,
+`slp`, che nello storico non servono a nessuno: circa 140 byte a riga, 43
+righe in 6 KB. Per il ponte non cambia niente, è un record con `bk=1` come
+gli altri.
+
 È così che il ponte lo pubblica su `serra/nodo/storico` e mai sullo stato
 attuale. Prima il ponte lo capiva solo dall'età del record, oltre 40 minuti:
 un record accodato nel ciclo precedente, vecchio di 15, passava per fresco e
@@ -237,6 +244,7 @@ grafici con dei -127.
 | `fw` `rst` | Versione firmware e motivo dell'ultimo reset (solo dopo un reset anomalo) |
 | `tp` | Tappa del ciclo in cui il nodo si era fermato prima di riavviarsi, in chiaro (`tx_stato`, `sd`, `irrigazione`…). Accompagna `fw` e `rst`, quindi compare solo dopo un reset anomalo, e manca alla primissima accensione perché la memoria RTC non contiene ancora niente di attendibile. In Home Assistant è `sensor.serra_tappa_ultimo_blocco` (dal ponte 2.4.0: prima finiva in un'entità numerica che la mostrava sempre vuota) |
 | `txp` | Tentativi che ha richiesto il pacchetto principale del ciclo **precedente**: 1 al primo colpo, fino a 3 con le ritrasmissioni, 4 se non è passato ed è finito nel backlog, 0 al primo ciclo dopo un'interruzione di corrente |
+| `rs` | Pacchetti in attesa nella riserva in RAM RTC (dal fw 2.6.0). Solo nel pacchetto principale, solo se diverso da zero, ed è l'ultimo campo: entra solo se il pacchetto lo può portare anche una volta accodato (`aggiungiSeCiSta()`), altrimenti si rinuncia senza `trunc=1`. Il ponte 2.6.0 lo annuncia con un template suo: nel pacchetto principale (quello con `txp`) la sua assenza vale 0 |
 
 **Eventi ripetuti finché non arrivano.** `fw`, `rst` e `tp`, e l'esito di
 un'irrigazione in `irr`, sono fatti e non letture. Se il pacchetto che li
@@ -398,7 +406,7 @@ l'impianto — passerebbe a vuoto senza segnalare nulla.
 | `serra/nodo/cmd/res` | ponte → HA | no | Esito di un comando |
 | `serra/nodo/cmd/pending` | ponte → HA | sì | Comandi ancora in attesa |
 | `serra/ponte/stato` | ponte → HA | sì | `online`/`offline` (Last Will) |
-| `serra/ponte/diag` | ponte → HA | sì | Diagnostica del ponte (compresi `eco_ko`, i pacchetti rimasti senza ACK per eco mancata, ed `eco_ms`, il tempo dell'ultima eco; dalla 2.5.0 anche lo stato della radio: `radio_ok`, `radio_rip`, `radio_causa`, `radio_det`, `radio_avv`, `rst_hw`, `ack_persi`, `spi_inc`, `crc_ko`) |
+| `serra/ponte/diag` | ponte → HA | sì | Diagnostica del ponte (compresi `eco_ko`, i pacchetti rimasti senza ACK per eco mancata, ed `eco_ms`, il tempo dell'ultima eco; dalla 2.5.0 anche lo stato della radio: `radio_ok`, `radio_rip`, `radio_causa`, `radio_det`, `radio_avv`, `rst_hw`, `ack_persi`, `spi_inc`, `crc_ko`; dalla 2.6.0 `storici`, i record arretrati pubblicati su `serra/nodo/storico`) |
 | `serra/ponte/log` | ponte → HA | sì | L'ultima riparazione della radio del ponte, con motivo e dettaglio (per esempio il registro trovato alterato) |
 | `serra/ponte/eco` | ponte → ponte | no | Eco di conferma (§2.2): il ponte deve poterci scrivere **e** leggere |
 | `homeassistant/…/config` | ponte → HA | sì | MQTT Discovery |

@@ -77,18 +77,21 @@ l'irrigazione segue solo l'orario.
 3. **Trasmissione** del pacchetto (`GH1;v=2;s=<seq>;t=<epoch>;temp=…;hum=…`),
    fino a 3 tentativi, aspettando l'ACK per 2 s ogni volta.
 4. **ACK ricevuto:** il nodo risincronizza l'orologio sull'ora NTP del ponte
-   (se lo scarto supera 30 s) ed esegue l'eventuale comando allegato.
+   (se lo scarto supera 5 s) ed esegue l'eventuale comando allegato.
 5. **ACK mancato:** il pacchetto finisce nel backlog su microSD e viene
    ritrasmesso ai risvegli successivi, marcato `bk=1` (fino a 60 record per
-   ciclo).
+   ciclo). Se la microSD manca o rifiuta la scrittura, dalla 2.6.0 il
+   pacchetto aspetta nella **riserva in RAM RTC** (6 KB, circa 43 pacchetti,
+   11 ore), che sopravvive a deep sleep e riavvii ma non a una mancanza di
+   corrente, ed è la prima a essere svuotata al ritorno del collegamento.
 6. **Irrigazione**, se è l'ora (vedi sotto).
 7. **Deep sleep** per 900 s, con il pin del relè bloccato a OFF.
 
 Il pacchetto riporta anche lo stato del nodo: impostazioni correnti (`sOra`,
 `sMin`, `sDur`, `sAuto`, `sSoil`, `slp`), esito dell'ultima irrigazione
 (`irr`), litri (`acqua`, `acquaTot`), record in backlog (`bl`, **-1 = microSD
-assente o guasta**), tentativi del pacchetto precedente (`txp`), qualità del
-segnale. Dopo un riavvio anomalo aggiunge `fw`, `rst` (motivo) e `tp` (tappa
+assente o guasta**), tentativi del pacchetto precedente (`txp`), pacchetti in
+riserva RTC (`rs`, solo se ce ne sono), qualità del segnale. Dopo un riavvio anomalo aggiunge `fw`, `rst` (motivo) e `tp` (tappa
 in cui si era bloccato), e li ripete finché non arrivano.
 
 ### 2.3 Irrigazione
@@ -233,9 +236,9 @@ Nessun file YAML: compaiono da sole sotto il dispositivo **Serra**.
 | **Clima** | Temperatura, Umidità aria, Pressione, Luce |
 | **Energia** | Tensione batteria |
 | **Acqua** | Acqua totale, Acqua ultima irrigazione, Esito irrigazione |
-| **Collegamento nodo** | Segnale LoRa (RSSI), SNR LoRa, Record in backlog, Tentativi trasmissione |
+| **Collegamento nodo** | Segnale LoRa (RSSI), SNR LoRa, Record in backlog, Pacchetti in riserva, Tentativi trasmissione |
 | **Diagnostica nodo** | Firmware nodo, Motivo ultimo riavvio, Tappa ultimo blocco (valorizzate solo dopo un riavvio anomalo) |
-| **Ponte** | Uptime, Segnale WiFi, Pacchetti ricevuti/scartati, Memoria libera/minima/blocco, Riconnessioni WiFi/MQTT, Comandi consegnati, Conferme MQTT mancate, Riparazioni radio, ACK persi, Letture SPI incoerenti, Ultima riparazione radio |
+| **Ponte** | Uptime, Segnale WiFi, Pacchetti ricevuti/scartati, Memoria libera/minima/blocco, Riconnessioni WiFi/MQTT, Comandi consegnati, Conferme MQTT mancate, Riparazioni radio, ACK persi, Letture SPI incoerenti, Pacchetti CRC errato, Record arretrati recuperati, Ultima riparazione radio |
 | **Comandi** | Pulsanti *Irriga ora*, *Blocca irrigazione per oggi*, *Finestra manutenzione*, *Svuota backlog*, *Riavvia nodo*; numeri *Orario irrigazione ora/minuto*, *Durata irrigazione*, *Soglia umidità terreno*, *Intervallo risveglio*; interruttore *Irrigazione automatica*; sensori *Comandi in coda* ed *Esito ultimo comando* |
 
 Gli entity_id li ricava HA dal **nome** alla prima registrazione (per esempio
@@ -249,7 +252,8 @@ Aggiunge quello che la discovery non può fare
 ([sorgente](Kimi_Agent_Smart%20Greenhouse%20ESP32%20LoRa/homeassistant/packages/serra.yaml)):
 
 - **Contatori dell'acqua** (`utility_meter`): litri di oggi e del mese, dal
-  totale cumulativo che manda il nodo.
+  totale cumulativo che manda il nodo, con `periodically_resetting: false`
+  perché non perdano i litri arrivati dopo un periodo `unavailable`.
 - **Sensori MQTT:** *Ultimo contatto* (istante di ricezione del ponte, più
   affidabile di `last_changed`) e *Ora del nodo* (per vedere se l'orologio
   della serra ha perso l'ora).
@@ -258,10 +262,16 @@ Aggiunge quello che la discovery non può fare
     0,8-1,2 ideale, sopra 1,6 stress.
   - **Minuti dall'ultimo contatto.**
   - **Stato generale**, una parola per la dashboard: *Tutto ok*, *Ponte
-    offline*, *Nodo non risponde*, *Batteria scarica*, *MicroSD guasta*, *Dati
-    in attesa*, *Comando in coda*.
+    offline*, *Nodo non risponde*, *Batteria scarica*, *Collegamento debole*,
+    *MicroSD guasta*, *Dati in attesa*, *Comando in coda*.
   - **Ponte online** e **Anomalia irrigazione** (valvola aperta senza flusso).
-  - Sul server anche **temperatura massima e minima di oggi**, con l'ora.
+  - **Temperatura massima e minima di oggi**, con l'ora e l'estremo di ieri.
+  - **Cicli ricevuti 24h**: la percentuale dei risvegli attesi che hanno
+    lasciato un dato, in tempo reale o recuperato dallo storico.
+- **Irrigazione adattiva** (interruttore *Serra irrigazione adattiva*, spento
+  di default): alle 00:20 regola la durata sul nodo in base alla massima di
+  ieri, da ×0,5 sotto i 10 °C a ×2 oltre i 38 °C, partendo da una *durata
+  base* regolabile.
 - **Automazioni di allarme:**
 
   | Allarme | Quando |
@@ -269,7 +279,11 @@ Aggiunge quello che la discovery non può fare
   | Batteria scarica | Sotto 11,2 V per 30 minuti |
   | Nodo muto | Nessun dato da oltre 2 ore, con il ponte online |
   | Irrigazione a vuoto | Esito `nessun_flusso` |
+  | Irrigazione quasi a secco | Esito `ok` ma meno di 0,1 L, o meno di un quarto della volta prima |
   | Backlog in crescita | Oltre 50 record in attesa per un'ora |
+  | Rischio gelo / troppo caldo | Sotto 2 °C / sopra 40 °C, al massimo ogni 12 ore |
+  | Collegamento debole | Meno dell'85% dei cicli in 24 ore, per un'ora |
+  | MicroSD guasta | `bl` sotto zero per 3 ore |
   | Esito comando | A ogni messaggio su `serra/nodo/cmd/res`, eseguito o rifiutato |
 
   Creano notifiche persistenti in HA; il package `notifiche_telegram.yaml` sul
@@ -301,7 +315,7 @@ della serra.
 
 | Situazione | Cosa succede |
 |---|---|
-| Ponte spento o WiFi giù | Il nodo non riceve ACK, accoda su microSD e ritrasmette quando il ponte torna |
+| Ponte spento o WiFi giù | Il nodo non riceve ACK, accoda su microSD (o nella riserva RTC) e ritrasmette quando il ponte torna |
 | Stallo WiFi del ponte | L'eco non torna, l'ACK non parte, il dato resta sul nodo |
 | Server o HA riavviati | I dati sono retained sul broker e ricompaiono subito |
 | Reset del nodo durante l'irrigazione | Relè chiuso alla prima istruzione, nessun secondo tentativo, esito `interrotta` |
@@ -309,8 +323,17 @@ della serra.
 | Radio del ponte configurata male | Il ponte se ne accorge e si ripara da solo (dalla 2.5.0) |
 | Comando premuto mentre il nodo dorme | Resta sul broker ed è eseguito al risveglio successivo |
 
-Il punto debole: **senza microSD** (`bl = -1`) un pacchetto non confermato non
-ha dove andare e si perde.
+Il punto debole: **senza microSD** (`bl = -1`) resta solo la riserva in RAM
+RTC del nodo (dalla 2.6.0): circa 11 ore di pacchetti, che una mancanza di
+corrente cancella. Fino alla 2.5.0 un pacchetto non confermato, senza
+microSD, era perso.
+
+Un altro limite: i record arretrati arrivano su `serra/nodo/storico`, ma Home
+Assistant non sa scrivere stati nel passato, quindi i grafici restano con il
+buco. Quei record contano però in *Cicli ricevuti 24h* e nel contatore
+*Record arretrati recuperati*, e gli eventi importanti (esito
+dell'irrigazione, riavvii) il nodo li ripete nel pacchetto attuale finché non
+arrivano.
 
 ---
 
@@ -330,7 +353,8 @@ Serra_smart/
     ├── docs/                         ← guida, protocollo, pinout
     ├── test_protocollo/              ← autotest del protocollo su un ESP32 qualsiasi
     ├── test_flusso/                  ← test del flussometro sulla scheda del nodo
-    └── tools/                        ← test Python (finestra di irrigazione, arretrati, tempo di volo…)
+    └── tools/                        ← test (finestra di irrigazione, arretrati, tempo di volo, riserva…)
+                                        e salute_serra.py, il rapporto giornaliero dal recorder di HA
 ```
 
 Nodo e ponte si compilano con l'IDE Arduino o `arduino-cli`, scheda **ESP32
@@ -340,28 +364,57 @@ essere accodato: ogni campo nuovo va verificato con `tools/test_arretrati.py`.
 
 ---
 
-## 9. Stato al 9/11/2026
+## 9. Stato al 10/11/2026
 
 | Parte | Stato |
 |---|---|
-| Firmware | Nodo **2.5.0**, ponte **2.5.0** (flashato il 20/10/2026, senza riavvii da allora) |
-| Irrigazione | Automatica alle 12:00 per 50 s; ultima erogazione 2,0 L |
-| Batteria | 13,1 V stasera; il 21/10 oscillava fra 13,1 e 14,5 V, senza segni di calo |
+| Firmware in funzione | Nodo **2.5.0**, ponte **2.5.0** (flashato il 20/10/2026, senza riavvii da allora) |
+| Firmware nel repository | Nodo **2.6.0**, ponte **2.6.0**, da flashare: **prima il ponte, poi il nodo** |
+| Package HA nel repository | Riallineato a quello del server (stessi id, massima/minima) più le novità del §6.2; **non ancora installato** |
+| Irrigazione | Automatica alle 12:00 per 50 s, circa 2,0 L; il 4/11 la valvola si è aperta ma sono passati 0,002 L |
+| Collegamento | Dal 30/10 al 10/11 arrivato l'87,2% dei cicli (853 su 978); 24% il 4/11 e 61% il 5/11, buco più lungo 9,3 ore |
+| Batteria | 13,0-14,5 V, nessun segno di calo |
+
+Per rifare il conto in qualunque momento, sul server:
+
+```
+docker exec -i homeassistant python3 - --giorni 10 < "Kimi_Agent_Smart Greenhouse ESP32 LoRa/tools/salute_serra.py"
+```
+
+### Cosa cambia con i firmware 2.6.0
+
+- **Nodo:** riserva in RAM RTC quando la microSD manca; secondo tentativo di
+  montaggio della microSD a 1 MHz; byte scritti sulla microSD controllati;
+  orologio corretto oltre 5 s invece di 30 (il DS1307 va avanti di circa 5 s
+  al giorno); anomalia di flusso anche con pochi impulsi (`FLUSSO_MIN_IMPULSI`),
+  non solo con zero; `CLRBL` svuota anche la riserva.
+- **Ponte:** entità *Pacchetti in riserva*, *Pacchetti CRC errato* e *Record
+  arretrati recuperati* (diagnostica `storici`).
+- Un nodo 2.6.0 con il ponte 2.5.0 funziona, ma `rs` nascerebbe come entità
+  generica: per questo l'ordine è ponte e poi nodo.
+- Il nodo 2.6.0 compila a 436.706 byte con il core esp32 3.3.12, il ponte a
+  1.011.501. Una cifra molto diversa vuol dire sketch sbagliato.
+
+### Installare il package HA
+
+Il file del repository ora parte da quello installato il 27/10, quindi si può
+copiare sopra senza rinominare entità: `packages/serra.yaml` del server va
+sostituito (tenendone una copia), poi **riavvio** di Home Assistant, perché
+la modifica agli `utility_meter` non si applica con il solo "Ricarica YAML". Prima di riavviare conviene la verifica:
+
+```
+docker exec homeassistant python3 -m homeassistant --script check_config -c /config
+```
 
 Questioni aperte:
 
 - **microSD del nodo non rilevata** (`bl = -1`) dal 20/10/2026. Sospetto
-  principale: modulo alimentato a 3,3 V invece di 5 V.
+  principale: modulo alimentato a 3,3 V invece di 5 V. Con il nodo 2.6.0 la
+  riserva RTC limita i danni, e il montaggio a 1 MHz potrebbe bastare a
+  riportarla in servizio.
 - **Segnale LoRa in calo:** circa -82 dBm a fine settembre, -99 il 21/10, -110
-  oggi (SNR ancora positivo). Da controllare antenne e connettori. Il ponte ha
-  dovuto riparare la radio 20 volte.
+  di media adesso, con punte a -122 (al limite della sensibilità a SF7). Il
+  4-5/11 l'SNR medio è sceso a 4-6 dB e si è perso più di metà dei cicli. Da
+  controllare antenne e connettori, è la causa di quasi tutti i cicli persi.
 - **Filo di reset della radio del ponte** (RST → GPIO 14) da verificare:
   `rst_hw = 0` nella diagnostica.
-- **Package HA sul server diverso da quello del repository:** sul server ci
-  sono i sensori di temperatura massima/minima e gli id
-  `sensor.serra_minuti_dall_ultimo_contatto` / `sensor.serra_ora_del_nodo`;
-  nel repo ci sono la riga *MicroSD guasta* e gli id rinominati. Prima di
-  copiare uno sull'altro vanno riallineati, altrimenti si rompono l'allarme
-  "nodo muto" e lo stato generale.
-- **Contatori dell'acqua:** l'`utility_meter` ignora l'aumento del totale
-  arrivato dopo un periodo `unavailable`, quindi il mensile può sottostimare.

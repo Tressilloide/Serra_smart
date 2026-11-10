@@ -81,6 +81,7 @@ un comando, più comandi si svuotano a catena nello stesso risveglio.
 | `serra_nodo/sensori.{h,cpp}` | Registro sensori modulare |
 | `serra_nodo/irrigazione.{h,cpp}` | Logica e protezioni dell'irrigazione |
 | `serra_nodo/backlog.{h,cpp}` | Coda su microSD |
+| `serra_nodo/riserva.{h,cpp}`, `riserva_coda.h` | Riserva in RAM RTC quando la microSD manca (dalla 2.6.0) |
 | `serra_nodo/impostazioni.{h,cpp}` | Persistenza in NVS |
 | `serra_nodo/comandi.{h,cpp}` | Esecuzione dei comandi |
 | `serra_nodo/orologio.{h,cpp}` | DS1307 e sincronizzazione |
@@ -98,6 +99,9 @@ un comando, più comandi si svuotano a catena nello stesso risveglio.
 | `server/` | Broker MQTT Mosquitto |
 | `docs/PROTOCOLLO.md` | Specifica del protocollo e dei comandi |
 | `docs/PINOUT.md` | Pinout, schemi e avvertenze hardware |
+| `tools/test_*.py` | Test che girano sul PC: finestra di irrigazione, record arretrati e bilancio dei byte, tempo di volo, scatola nera, riserva RTC (quest'ultimo compila `test_riserva.cpp` con g++) |
+| `tools/verifica_entita.py` | Controlla che ogni entità citata da package e dashboard esista |
+| `tools/salute_serra.py` | Rapporto giornaliero dal recorder di Home Assistant: cicli arrivati, buchi, segnale, batteria, acqua (vedi §9.bis) |
 
 > L'IDE Arduino richiede che ogni sketch stia in una cartella con lo stesso
 > nome del file `.ino`. Non rinominare le cartelle. Tutti i `.h` e `.cpp` nella
@@ -233,6 +237,11 @@ Nessuna di queste richiede di ricompilare: i valori vivono in NVS.
 Se il DS1307 ha perso l'ora (CR2032 scarica), il nodo **lo dichiara e non
 irriga**, poi si risincronizza da solo: il ponte allega l'ora NTP a ogni ACK e
 il DS1307 si corregge al primo contatto.
+
+Lo stesso meccanismo tiene a bada la deriva: il DS1307 di questo nodo va
+avanti di circa 5 s al giorno, e dalla 2.6.0 il nodo si riallinea quando lo
+scarto supera `RTC_DRIFT_MAX_SEC`, 5 s (prima 30, cioè una correzione ogni
+sei giorni e l'irrigazione fino a mezzo minuto in anticipo).
 
 > **Cambiato rispetto alla 1.0:** prima, con l'orologio perso, veniva impostata
 > l'*ora di compilazione*. Il risultato era un orologio che sembrava
@@ -540,6 +549,20 @@ stabili, non ce n'e'.
 bene, fra −70 e −80 accettabile, sotto −80 la connessione inizia a cadere.
 Se `sensor.serra_riconnessioni_mqtt` continua a salire, e' quasi sempre questo.
 
+**Il conto dei cicli.** Tutti i numeri sopra sono sintomi; quello che conta
+e' quanti cicli arrivano. In Home Assistant lo dice
+`sensor.serra_cicli_ricevuti_24h` (package, dal 10/11/2026), giorno per giorno
+lo dice `tools/salute_serra.py`, da lanciare sul server:
+
+```
+docker exec -i homeassistant python3 - --giorni 10 < tools/salute_serra.py
+```
+
+Esempio reale, 4-5/11/2026: RSSI medio −113 dBm con punte a −121, SNR medio
+4,1 dB, e il 24% dei cicli arrivato in un giorno, il 61% nell'altro. Con la
+microSD guasta quei pacchetti si sono persi; dal nodo 2.6.0 aspettano nella
+riserva in RAM RTC, fino a circa 11 ore.
+
 ---
 
 ## 10. Risoluzione problemi
@@ -566,7 +589,7 @@ Se `sensor.serra_riconnessioni_mqtt` continua a salire, e' quasi sempre questo.
 | `sensor.serra_record_in_backlog` a **-1** | La microSD del nodo e' assente o guasta: i pacchetti non consegnati non hanno dove andare e si perdono. In HA lo stato generale dice "MicroSD guasta" |
 | Entita' che lampeggiano, e si vuole sapere di chi e' la colpa | Nella diagnostica del ponte c'e' **`mqtt_caduta`**, cioe' `mqtt.state()` letto nell'istante della caduta: **-4** vuol dire che e' stato il ponte a chiudere perche' il suo ping non ha avuto risposta, **-3** che se l'e' vista chiudere sotto dal broker. **`rssi_caduta`** dice com'era il segnale WiFi in quel momento: se e' molto peggiore di `wifi_rssi`, il problema e' la copertura e non il software |
 | `terreno_umido` | Sta funzionando: il terreno è sopra soglia. Abbassa la soglia o mettila a −1 |
-| `nessun_flusso` | Serbatoio vuoto, pompa guasta, filtro otturato o flussometro scollegato. Se compare a ogni irrigazione ma l'acqua c'è, alza `FLUSSO_GRAZIA_SEC`: il tuo tubo impiega più di 5 s a riempirsi |
+| `nessun_flusso` | Serbatoio vuoto, pompa guasta, filtro otturato o flussometro scollegato. Dal nodo 2.6.0 scatta anche con meno di `FLUSSO_MIN_IMPULSI` (10) impulsi, non solo con zero: il 4/11/2026 un impulso spurio aveva fatto passare per "ok" un'irrigazione da 0,002 L. Se compare a ogni irrigazione ma l'acqua c'è, alza `FLUSSO_GRAZIA_SEC`: il tuo tubo impiega più di 5 s a riempirsi |
 | Comando premuto ma non succede nulla | Normale: viene eseguito al prossimo risveglio. Controlla `sensor.serra_comandi_in_coda` |
 | Comando rifiutato con `rc=3` | Bloccato da un limite di sicurezza. Il motivo è nel campo `det` |
 | Entità mancanti in HA | Riavvia il ponte: ripubblica tutta la discovery a ogni riconnessione MQTT |
@@ -584,4 +607,11 @@ Se `sensor.serra_riconnessioni_mqtt` continua a salire, e' quasi sempre questo.
 - **Autenticazione dei comandi** — il campo `h` è previsto dal protocollo
 - **MOSFET generale** per togliere corrente a tutte le periferiche nel sonno
 - **Ingest su InfluxDB** dal topic `serra/nodo/storico`, per recuperare
-  davvero la cronologia dei dati arretrati con il loro timestamp originale
+  davvero la cronologia dei dati arretrati con il loro timestamp originale.
+  Home Assistant non sa scrivere stati nel passato: oggi i record arretrati
+  contano solo in *Cicli ricevuti 24h* e in *Record arretrati recuperati*
+- **Spreading factor più alto** (SF9: circa +5 dB di margine, pacchetti tre
+  volte più lunghi in aria) se antenne e connettori non bastano a riportare
+  il segnale sopra i −100 dBm. Va cambiato insieme su nodo e ponte, quindi
+  conviene farlo con un meccanismo di ripiego (il nodo che riprova all'SF
+  vecchio se al nuovo non risponde nessuno), non con due flash a mano

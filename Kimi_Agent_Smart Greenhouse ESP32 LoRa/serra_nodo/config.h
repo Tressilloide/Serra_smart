@@ -18,7 +18,7 @@
 // ======================= IDENTITA' DEL NODO =================================
 
 #define NODE_ID          "GH1"    // Identificativo di questo nodo (max 8 char)
-#define FW_VERSION       "2.5.0"  // Riportata in Home Assistant
+#define FW_VERSION       "2.6.0"  // Riportata in Home Assistant
 
 // ======================= RADIO LoRa =========================================
 // Questi parametri DEVONO essere identici sul ponte in camera.
@@ -239,12 +239,48 @@
                                       // Oltre, i record piu' VECCHI vengono scartati.
 #define LOG_MAX_BYTE        65536UL   // Tetto del file di log (64 KB)
 
+/*
+ * Secondo tentativo di montaggio della microSD, a clock ridotto.
+ *
+ * La libreria monta la scheda a 4 MHz. Su fili lunghi, con un modulo
+ * alimentato al limite (vedi docs/PINOUT.md 2.7) o con contatti ossidati,
+ * il primo comando fallisce e la scheda risulta assente per l'intero ciclo:
+ * dal 20/10/2026 succede a ogni risveglio. Un secondo tentativo a 1 MHz
+ * costa qualche millisecondo e rimette in servizio le schede che a 4 MHz
+ * non ce la fanno.
+ */
+#define SD_HZ_LENTO         1000000UL
+
+/*
+ * Riserva in memoria RTC (vedi riserva.h): dove aspettano i pacchetti non
+ * consegnati quando la microSD manca. Circa 140 byte a pacchetto, quindi
+ * 6 KB sono una quarantina di cicli, una decina d'ore: copre i buchi di
+ * 4-9 ore visti il 3-5/11/2026, quando il segnale e' sceso a -121 dBm.
+ *
+ * La RAM RTC lenta dell'ESP32 e' di 8 KB, i primi 512 byte riservati al
+ * coprocessore ULP e il resto condiviso con g_seq e la scatola nera. Con
+ * 6144 restano circa 1,4 KB liberi (core 3.3.12). Se si sfora, e' il linker
+ * a dirlo; per vedere quanto resta:
+ *   xtensa-esp32-elf-objdump -h serra_nodo.ino.elf | grep rtc
+ * (.rtc_noinit e .rtc.force_slow devono finire prima di .rtc_slow_reserved)
+ */
+#define RISERVA_BYTE        6144
+
 // ======================= COMANDI ============================================
 
 #define MAX_CMD_PER_RISVEGLIO 5       // Quanti comandi eseguire per ogni veglia
 #define WAKE_MAX_SEC          300     // Tetto della finestra di manutenzione WAKE
-#define RTC_DRIFT_MAX_SEC     30      // Deriva oltre la quale il DS1307 viene
-                                      // risincronizzato dall'ora del ponte
+/*
+ * Deriva oltre la quale il DS1307 viene risincronizzato dall'ora del ponte.
+ *
+ * Era 30 s. Il DS1307 di questo nodo va avanti di circa 5 s al giorno, quindi
+ * con 30 s la correzione arrivava ogni sei giorni e l'irrigazione partiva
+ * fino a mezzo minuto prima dell'ora vera. Con 5 s si corregge circa una
+ * volta al giorno. Non scendere sotto i 2 s: ponte e DS1307 contano a secondi
+ * interi, e fra timbratura dell'ACK e lettura passa quasi un secondo, quindi
+ * con una soglia piu' stretta la correzione scatterebbe a vuoto.
+ */
+#define RTC_DRIFT_MAX_SEC     5
 
 // ============================ PINOUT ========================================
 

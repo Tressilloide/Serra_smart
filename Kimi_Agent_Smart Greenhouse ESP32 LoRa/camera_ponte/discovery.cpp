@@ -68,6 +68,10 @@ static const EntitaSensore ENTITA[] = {
   // Tentativi che il pacchetto principale del ciclo PRECEDENTE ha richiesto:
   // 1 al primo colpo, fino a 3 con le ritrasmissioni, 4 se non e' passato.
   { "txp",      "Tentativi trasmissione", nullptr, nullptr,         "measurement",  "mdi:repeat",            false, true  },
+  // Pacchetti che aspettano nella riserva in RAM RTC del nodo, dal firmware
+  // 2.6.0 (serra_nodo/riserva.h): c'e' solo quando la riserva non e' vuota,
+  // e ha un template suo (vedi pubblicaSensore()).
+  { "rs",       "Pacchetti in riserva",   nullptr, nullptr,         "measurement",  "mdi:tray-full",         false, true  },
   { "trunc",    "Pacchetto troncato",     nullptr, nullptr,         nullptr,        "mdi:alert",             false, true  },
 };
 
@@ -139,7 +143,17 @@ static void pubblicaSensore(const EntitaSensore& e) {
    * sporcherebbe grafici e statistiche.
    */
   char tpl[220];
-  if (e.testuale) {
+  if (strcmp(e.chiave, "rs") == 0) {
+    /*
+     * "rs" il nodo lo manda solo quando la riserva non e' vuota: con il
+     * template generico, svuotata la riserva l'entita' resterebbe per sempre
+     * sull'ultimo numero. Nel pacchetto principale (l'unico con "txp") la
+     * sua assenza vuol dire zero; negli esiti dei comandi e nei ping, che
+     * non lo portano mai, vuol dire "non so" e si tiene il valore.
+     */
+    snprintf(tpl, sizeof(tpl),
+             "{%% if value_json.txp is defined %%}{{ value_json.rs | default(0) }}{%% endif %%}");
+  } else if (e.testuale) {
     snprintf(tpl, sizeof(tpl), "{{ value_json.%s | default('') }}", e.chiave);
   } else {
     snprintf(tpl, sizeof(tpl),
@@ -446,6 +460,13 @@ static const DiagPonte DIAG[] = {
   { "ponte_radiorip", "Riparazioni radio",   "radio_rip",      nullptr, nullptr,         "mdi:radio-tower"     },
   { "ponte_ackpersi", "ACK persi",           "ack_persi",      nullptr, nullptr,         "mdi:message-reply-text" },
   { "ponte_spiinc",   "Letture SPI incoerenti", "spi_inc",     nullptr, nullptr,         "mdi:sine-wave"       },
+  // Pacchetti arrivati con il CRC sbagliato: con un segnale al limite sono
+  // soprattutto pacchetti del nodo ricevuti a meta'. Il contatore c'era gia'
+  // nella diagnostica, ma senza entita' non lo vedeva nessuno.
+  { "ponte_crcko",    "Pacchetti CRC errato",   "crc_ko",      nullptr, nullptr,         "mdi:package-variant-closed-remove" },
+  // Record arretrati (backlog su SD o riserva in RAM RTC) consegnati e
+  // pubblicati su serra/nodo/storico: la prova che le code del nodo servono.
+  { "ponte_storici",  "Record arretrati recuperati", "storici", nullptr, nullptr,     "mdi:history"         },
 };
 
 bool discoveryPubblicaPonte() {

@@ -21,7 +21,8 @@
  *   7. Lettura di tutti i sensori abilitati (tabella modulare in sensori.cpp)
  *   8. Trasmissione LoRa con ACK. L'ACK puo' contenere COMANDI da eseguire:
  *      e' cosi' che Home Assistant parla con un nodo che dorme
- *   9. Svuotamento del backlog su microSD se il link funziona
+ *   9. Svuotamento della riserva in RAM RTC e del backlog su microSD, se il
+ *      link funziona
  *  10. Deep sleep allineato all'intervallo configurato
  *
  *  ---------------------------------------------------------------------------
@@ -50,6 +51,7 @@
 #include "sensori.h"
 #include "irrigazione.h"
 #include "backlog.h"
+#include "riserva.h"
 #include "radio.h"
 #include "comandi.h"
 
@@ -252,30 +254,91 @@ static void marcaArretrato(char* riga) {
   memcpy(sep, MARCA_ARRETRATO, LUNG_MARCA);
 }
 
+// Si serializza lasciando libero lo spazio del marcatore: la riga finale
+// non supera mai PROTO_MAX_PAYLOAD, nemmeno con un pacchetto al limite.
+static size_t serializzaArretrato(const PacchettoKV& p, char* buf) {
+  size_t n = p.serializza(NODE_ID, buf, PROTO_MAX_PAYLOAD + 1 - LUNG_MARCA);
+  if (n > 0) marcaArretrato(buf);
+  return n;
+}
+
 /*
- * Accoda su microSD un pacchetto che il ponte non ha confermato.
+ * Campi che nella riserva in RAM RTC non vengono conservati: alimentano le
+ * entita' di comando di Home Assistant, che leggono soltanto lo stato
+ * attuale. In un record arretrato non li guarda nessuno, e toglierli fa
+ * stare in riserva un'ora di pacchetti in piu'.
+ */
+static bool campoDiConfigurazione(const char* chiave) {
+  static const char* const CONFIG[] = { "sAuto", "sOra", "sMin", "sDur", "sSoil", "slp" };
+  for (const char* c : CONFIG)
+    if (strcmp(chiave, c) == 0) return true;
+  return false;
+}
+
+static bool accodaInRiserva(const PacchettoKV& p) {
+  // static: un PacchettoKV pesa quasi un kilobyte, e qui si puo' arrivare
+  // anche dal fondo della catena dei comandi.
+  static PacchettoKV ridotto;
+  ridotto.reset();
+  for (uint8_t i = 0; i < p.n(); i++)
+    if (!campoDiConfigurazione(p.campo(i).chiave))
+      ridotto.aggiungi(p.campo(i).chiave, p.campo(i).valore);
+
+  char buf[PROTO_MAX_PAYLOAD + 8];
+  return serializzaArretrato(ridotto, buf) > 0 && riservaAccoda(buf);
+}
+
+/*
+ * Accoda un pacchetto che il ponte non ha confermato: sulla microSD se c'e',
+ * altrimenti nella riserva in RAM RTC (vedi riserva.h).
  * Ritorna false se non ci e' riuscito, cioe' se il pacchetto e' perso.
  */
 static bool accodaNonConsegnato(const PacchettoKV& p) {
   traccia(TAPPA_SD_ACCODA);
 
-  // Si serializza lasciando libero lo spazio del marcatore: la riga finale
-  // non supera mai PROTO_MAX_PAYLOAD, nemmeno con un pacchetto al limite.
   char buf[PROTO_MAX_PAYLOAD + 8];
-  size_t n = p.serializza(NODE_ID, buf, PROTO_MAX_PAYLOAD + 1 - LUNG_MARCA);
-  if (n == 0) return false;
-  marcaArretrato(buf);
+  if (serializzaArretrato(p, buf) == 0) return false;
 
   if (backlogAccoda(buf)) {
     Serial.println(F("[BACKLOG] Pacchetto accodato su microSD."));
     return true;
   }
 
-  // Prima questo caso stampava lo stesso "accodato": backlogAccoda() fallisce
-  // in silenzio se la scheda non c'e', e il valore di ritorno era ignorato.
-  Serial.println(F("[BACKLOG] ERRORE: accodamento fallito (microSD assente o guasta): "
+  /*
+   * Fino alla 2.5.0 qui il pacchetto era perso, e con la microSD morta dal
+   * 20/10/2026 lo era ogni pacchetto non confermato: il 13% dei cicli.
+   */
+  if (accodaInRiserva(p)) {
+    Serial.printf("[BACKLOG] microSD non disponibile: pacchetto in riserva RTC (%u in attesa).\n",
+                  riservaConta());
+    return true;
+  }
+
+  Serial.println(F("[BACKLOG] ERRORE: accodamento fallito su microSD e in riserva: "
                    "questo pacchetto e' PERSO."));
   return false;
+}
+
+/*
+ * Aggiunge un campo facoltativo solo se il pacchetto lo puo' portare intero
+ * anche una volta accodato col marcatore, cioe' alla stessa condizione di
+ * PacchettoKV::serializza() con il tetto di serializzaArretrato().
+ *
+ * Il pacchetto principale e' gia' al limite (tools/test_arretrati.py): un
+ * campo che non ci sta verrebbe omesso dalla serializzazione, che pero'
+ * aggiungerebbe "trunc=1" e Home Assistant segnalerebbe un pacchetto
+ * troncato per un dettaglio di cui si puo' fare a meno.
+ */
+static void aggiungiSeCiSta(PacchettoKV& pkt, const char* chiave, uint32_t valore) {
+  char v[12];
+  snprintf(v, sizeof(v), "%lu", (unsigned long)valore);
+
+  char buf[PROTO_MAX_PAYLOAD + 8];
+  const size_t occupati = pkt.serializza(NODE_ID, buf, sizeof(buf));
+  const size_t serve    = 1 + strlen(chiave) + 1 + strlen(v);
+  if (!pkt.troncato() && strstr(buf, ";trunc=1") == nullptr &&
+      occupati + serve + 10 < PROTO_MAX_PAYLOAD + 1 - LUNG_MARCA)
+    pkt.aggiungi(chiave, v);
 }
 
 // ===========================================================================
@@ -486,6 +549,7 @@ void setup() {
     g_txpPrec = 0;                // 0 = non si sa: primo ciclo dopo la corrente
   }
   g_risvegli++;
+  riservaInit(tracciaMemoriaPersa());
 
   Serial.println();
   Serial.println(F("============================================================"));
@@ -600,6 +664,10 @@ void setup() {
   // troppo lungo, la serializzazione ometterebbe per primi gli ultimi.
   pkt.aggiungiU("txp", g_txpPrec);
 
+  // Pacchetti in attesa nella riserva RTC: c'e' solo quando la microSD manca,
+  // ed e' l'ultimo campo, il primo a cui si rinuncia se non c'e' posto.
+  if (riservaConta() > 0) aggiungiSeCiSta(pkt, "rs", riservaConta());
+
   // (8) Trasmissione + comandi
   traccia(TAPPA_TX_STATO);
   RispostaAck ack;
@@ -624,8 +692,14 @@ void setup() {
 
   // (9) Svuotamento del backlog: solo se il link e' vivo, altrimenti si
   //     sprecherebbe batteria per tentativi destinati a fallire.
+  //     Prima la riserva in RAM RTC: delle due code e' la piu' fragile, perche'
+  //     una mancanza di corrente la cancella.
   if (g_linkOk) {
     traccia(TAPPA_BACKLOG);
+    if (riservaConta() > 0) {
+      Serial.printf("[RISERVA] %u pacchetti da consegnare.\n", riservaConta());
+      riservaDrena(consegnaRecordStorico, BACKLOG_MAX_INVII);
+    }
     uint32_t inCoda = backlogConta();
     if (inCoda > 0) {
       Serial.printf("[BACKLOG] %lu record da consegnare.\n", (unsigned long)inCoda);

@@ -76,6 +76,7 @@ static uint32_t riconnessioniMqtt   = 0;
 static uint32_t pacchettiRicevuti   = 0;
 static uint32_t pacchettiScartati   = 0;
 static uint32_t comandiConsegnati   = 0;
+static uint32_t recordStorici       = 0;   // arretrati pubblicati su serra/nodo/storico
 static int      ultimoRssi          = 0;
 static float    ultimoSnr           = 0.0f;
 
@@ -851,6 +852,7 @@ static void gestisciLoRa() {
   // Solo adesso il pacchetto e' consegnato: una sua ritrasmissione e' un
   // duplicato da non ripubblicare.
   ricorda(seq, ts);
+  if (storico) recordStorici++;
 
   // Riferimento per riconoscere i record arretrati che seguiranno, solo se
   // il timestamp e' credibile rispetto all'ora NTP del ponte.
@@ -904,7 +906,7 @@ static void pubblicaDiagnostica() {
     "\"eco_ko\":%lu,\"eco_ms\":%lu,"
     "\"radio_ok\":%d,\"radio_rip\":%lu,\"radio_causa\":\"%s\",\"radio_det\":\"%s\","
     "\"radio_avv\":\"%s\",\"rst_hw\":%d,"
-    "\"ack_persi\":%lu,\"spi_inc\":%lu,\"crc_ko\":%lu,"
+    "\"ack_persi\":%lu,\"spi_inc\":%lu,\"crc_ko\":%lu,\"storici\":%lu,"
     "\"ip\":\"%s\",\"fw\":\"%s\"}",
     (unsigned long)(millis() / 1000UL),
     (unsigned long)pacchettiRicevuti, (unsigned long)pacchettiScartati,
@@ -957,7 +959,7 @@ static void pubblicaDiagnostica() {
     radioCausaTesto(radioUltimaCausa()), radioUltimoDettaglio(),
     radioAvviso(), (int)radioResetHw(),
     (unsigned long)ackPersi, (unsigned long)radioLettureIncoerenti(),
-    (unsigned long)radioCrcErrati(),
+    (unsigned long)radioCrcErrati(), (unsigned long)recordStorici,
     WiFi.localIP().toString().c_str(), FW_VERSION_PONTE);
 
   mqtt.publish(TOPIC_DIAG, (const uint8_t*)payload, strlen(payload), true);

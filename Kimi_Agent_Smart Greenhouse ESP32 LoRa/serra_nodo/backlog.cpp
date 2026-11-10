@@ -20,10 +20,19 @@ bool backlogInit() {
   SPI.begin(SD_SCK, SD_MISO, SD_MOSI);
   g_sdOk = SD.begin(SD_CS);
 
+  // Secondo tentativo a clock ridotto (vedi SD_HZ_LENTO in config.h). end()
+  // prima, o la libreria troverebbe il punto di montaggio gia' occupato dal
+  // tentativo fallito e rinuncerebbe senza nemmeno parlare con la scheda.
+  if (!g_sdOk) {
+    SD.end();
+    g_sdOk = SD.begin(SD_CS, SPI, SD_HZ_LENTO);
+    if (g_sdOk) Serial.println(F("[SD] Montata solo al secondo tentativo, a 1 MHz."));
+  }
+
   if (!g_sdOk) {
     Serial.println(F("[SD] ERRORE: scheda non trovata. Nessun backlog disponibile."));
-    Serial.println(F("[SD] Il nodo continua a funzionare, ma i pacchetti non"));
-    Serial.println(F("[SD] consegnati andranno persi. Controlla: FAT32, CS=GPIO4, 3,3 V."));
+    Serial.println(F("[SD] I pacchetti non consegnati aspetteranno nella riserva in"));
+    Serial.println(F("[SD] memoria RTC. Controlla: FAT32, CS=GPIO4, alimentazione del modulo."));
     return false;
   }
 
@@ -194,11 +203,27 @@ bool backlogAccoda(const char* riga) {
     Serial.println(F("[SD] ERRORE: impossibile aprire il backlog in append."));
     return false;
   }
-  f.print(riga);
-  f.print('\n');          // solo LF: println scriverebbe CRLF
+  const size_t attesi = strlen(riga) + 1;
+  size_t scritti = f.print(riga);
+  scritti += f.print('\n');          // solo LF: println scriverebbe CRLF
   f.close();
-
   invalidaConta();
+
+  /*
+   * Prima il ritorno di print() era ignorato: con una scheda che accetta
+   * l'apertura ma non la scrittura, il pacchetto risultava accodato ed era
+   * perso. Adesso il chiamante lo sa e lo affida alla riserva in RAM RTC.
+   * La scheda si considera fuori servizio fino al prossimo risveglio, cosi'
+   * le operazioni successive del ciclo non insistono su un supporto che non
+   * risponde, e il campo "bl" dice -1.
+   */
+  if (scritti != attesi) {
+    Serial.printf("[SD] ERRORE: scritti %u byte su %u. Scheda fuori servizio per questo ciclo.\n",
+                  (unsigned)scritti, (unsigned)attesi);
+    g_sdOk = false;
+    return false;
+  }
+
   applicaTettoDimensione();
   return true;
 }

@@ -185,6 +185,40 @@ for nome, campi in (("pacchetto principale (crash + txp)", PRINCIPALE),
     if chiavi_di(a)[1:] != chiavi_di(d):
         errori.append("%s: la riga accodata non ha gli stessi campi del pacchetto" % nome)
 
+# --- Campo facoltativo "rs" (riserva in RAM RTC, firmware 2.6.0) -----------
+# Il pacchetto principale e' gia' al limite: "rs" entra solo se ci sta anche
+# una volta accodato (aggiungiSeCiSta), altrimenti si rinuncia senza trunc=1.
+# Ricalco della condizione e prova sui due estremi: il caso peggiore, dove
+# non deve entrare ne' sporcare il pacchetto, e uno realistico di microSD
+# guasta, dove deve entrare.
+
+if not re.search(r'aggiungiSeCiSta\(\s*pkt\s*,\s*"rs"', ino):
+    errori.append('"rs" non passa da aggiungiSeCiSta(): potrebbe far troncare il pacchetto')
+
+
+def con_rs(campi, rs):
+    base, _ = diretto(campi)
+    serve = 1 + len("rs") + 1 + len(str(rs))
+    if "trunc=1" not in base and len(base) + serve + 10 < MAX_PAYLOAD + 1 - len(MARCA):
+        return campi + [("rs", str(rs))]
+    return campi
+
+
+REALISTICO = [(k, {"s": "2760", "acquaTot": "199.28", "bl": "-1", "temp": "5.79"}.get(k, v))
+              for k, v in PRINCIPALE]
+for nome, campi, deve_entrare in (("rs nel caso peggiore", PRINCIPALE, None),
+                                  ("rs con microSD guasta (realistico)", REALISTICO, True)):
+    finale = con_rs(campi, 43)
+    d, omessi_d = diretto(finale)
+    a, omessi_a = accodato(finale)
+    entrato = "rs" in chiavi_di(d)
+    print("%-34s %8d %8d  %s" % (nome, len(d), len(a),
+                                 "rs incluso" if entrato else "rs rinunciato"))
+    if omessi_d or omessi_a or "trunc=1" in d or "trunc=1" in a:
+        errori.append("%s: con rs il pacchetto perde campi o viene marcato troncato" % nome)
+    if deve_entrare and not entrato:
+        errori.append("%s: rs non entra nemmeno in un pacchetto realistico" % nome)
+
 # Un pacchetto oltre ogni limite: 28 campi pieni. Deve uscire troncato ma
 # valido, sotto il tetto, con marcatore e sequenza.
 ENORME = [("v", "2"), ("s", "123456")] + [("k%02d" % i, "9" * (LEN_VALORE - 1)) for i in range(26)]

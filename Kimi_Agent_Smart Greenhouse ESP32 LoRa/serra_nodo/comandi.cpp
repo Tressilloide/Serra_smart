@@ -5,6 +5,7 @@
 #include "sensori.h"
 #include "orologio.h"
 #include "backlog.h"
+#include "riserva.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -269,7 +270,9 @@ EsitoComando comandoEsegui(const ComandoRicevuto& cmd, const DateTime& adesso,
     if (idx >= 0) {
       long secco   = argL(cmd.args, 1, -1);
       long bagnato = argL(cmd.args, 2, -1);
-      if (secco < 0 || bagnato < 0 || secco == bagnato) {
+      // L'ADC dell'ESP32 e' a 12 bit: un valore oltre 4095 non puo' essere una
+      // lettura, e nel cast a uint16_t sarebbe diventato un numero a caso.
+      if (secco < 0 || bagnato < 0 || secco > 4095 || bagnato > 4095 || secco == bagnato) {
         es.rc = RC_ARGOMENTI;
         dettaglio(es, "valori_non_validi");
         return es;
@@ -335,6 +338,7 @@ EsitoComando comandoEsegui(const ComandoRicevuto& cmd, const DateTime& adesso,
   // --- CLRBL : svuota il backlog -------------------------------------------
   if (strcmp(op, "CLRBL") == 0) {
     backlogSvuota();
+    riservaSvuota();
     dettaglio(es, "backlog_svuotato");
     return es;
   }

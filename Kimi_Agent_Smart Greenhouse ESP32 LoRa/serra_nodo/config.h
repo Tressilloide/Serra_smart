@@ -228,6 +228,18 @@
 // l'anomalia. Sommati fanno il ritardo totale del rilevamento.
 #define FLUSSO_TIMEOUT_SEC   10
 
+/*
+ * Impulsi sotto i quali, passate GRAZIA + TIMEOUT, l'acqua si considera
+ * mancante. Prima la soglia era "zero impulsi esatti", e il 4/11/2026
+ * l'irrigazione delle 12:00 ha erogato 0,002 L -- UN impulso, un rimbalzo
+ * del segnale o una goccia -- invece dei soliti 2,2 L: esito "ok", nessun
+ * allarme, serra a secco per un giorno senza che nessuno lo sapesse.
+ * Con la portata reale (circa 2,6 L/min, ~19 impulsi al secondo) in quei
+ * dieci secondi di verdetto ne arrivano a centinaia: 10 sono un margine
+ * largo anche per un impianto a goccia molto piu' lento.
+ */
+#define FLUSSO_MIN_IMPULSI   10
+
 // ======================= MICROSD / BACKLOG ==================================
 
 #define FILE_BACKLOG     "/backlog.txt"

@@ -335,7 +335,7 @@ EsitoIrrigazione irrigazioneEsegui(uint32_t durataSec, float litriTarget, uint32
       // Anomalia idraulica: valvola aperta da abbastanza tempo e ancora
       // nessun impulso. Pompa guasta, serbatoio vuoto, filtro otturato,
       // tubo staccato o flussometro scollegato.
-      if (!anomaliaFlusso && trascorso > verdetoMs && flussoImpulsi() == 0) {
+      if (!anomaliaFlusso && trascorso > verdetoMs && flussoImpulsi() < FLUSSO_MIN_IMPULSI) {
         anomaliaFlusso = true;
         Serial.println(F("[IRRIG] ANOMALIA: valvola aperta ma nessun flusso rilevato!"));
         backlogLog("IRRIGAZIONE ANOMALIA nessun flusso");
@@ -370,9 +370,13 @@ EsitoIrrigazione irrigazioneEsegui(uint32_t durataSec, float litriTarget, uint32
      * e' proprio l'irrigazione manuale breve fatta per provare l'impianto.
      * Superata la sola finestra di grazia, zero impulsi vuol dire zero acqua.
      */
-    if (!anomaliaFlusso && trascorsoTot > graziaMs && flussoImpulsi() == 0) {
+    // Sotto il tempo del verdetto pieno la soglia resta "zero impulsi": in
+    // un'irrigazione di pochi secondi l'acqua ha appena cominciato a girare.
+    const uint32_t minimo = trascorsoTot > verdetoMs ? (uint32_t)FLUSSO_MIN_IMPULSI : 1UL;
+    if (!anomaliaFlusso && trascorsoTot > graziaMs && flussoImpulsi() < minimo) {
       anomaliaFlusso = true;
-      Serial.println(F("[IRRIG] ANOMALIA: irrigazione conclusa senza un solo impulso!"));
+      Serial.printf("[IRRIG] ANOMALIA: irrigazione conclusa con %lu impulsi soltanto!\n",
+                    (unsigned long)flussoImpulsi());
       backlogLog("IRRIGAZIONE ANOMALIA nessun flusso (verdetto finale)");
     }
 

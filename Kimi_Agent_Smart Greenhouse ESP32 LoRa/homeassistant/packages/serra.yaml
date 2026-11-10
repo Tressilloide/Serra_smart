@@ -386,6 +386,43 @@ automation:
             tubo staccato, oppure il flussometro si e' scollegato.
           notification_id: serra_flusso
 
+  # --- Irrigazione quasi a secco ---------------------------------------------
+  # Il caso che "nessun_flusso" non vede: il 4/11/2026 la valvola si e' aperta
+  # per 50 s e sono passati 0,002 L, un impulso solo, con esito "ok". Il nodo
+  # dal firmware 2.6.0 lo chiama nessun_flusso da solo (FLUSSO_MIN_IMPULSI);
+  # questo avviso copre anche i nodi piu' vecchi e le portate dimezzate.
+  - id: serra_irrigazione_scarsa
+    alias: "Serra - Irrigazione quasi a secco"
+    description: "L'irrigazione e' finita con molta meno acqua del previsto"
+    mode: single
+    triggers:
+      # Anche da "non disponibile": il 4/11 il valore e' passato da 2,209 a
+      # 0,002 attraverso una riconnessione del ponte, e un filtro sullo stato
+      # di partenza l'avrebbe perso. Le ripubblicazioni dello stesso valore
+      # dopo ogni riconnessione le ferma la pausa di 12 ore.
+      - trigger: state
+        entity_id: sensor.serra_acqua_ultima_irrigazione
+        not_to: [unknown, unavailable]
+    conditions:
+      - condition: state
+        entity_id: sensor.serra_esito_irrigazione
+        state: "ok"
+      # Sotto 0,1 L, o meno di un quarto della volta prima quando la si
+      # conosce: un'irrigazione vera non ci arriva.
+      - "{{ trigger.to_state.state | float(0) < 0.1
+            or trigger.to_state.state | float(0) < 0.25 * trigger.from_state.state | float(0) }}"
+      - "{{ this.attributes.last_triggered is none or (now() - this.attributes.last_triggered).total_seconds() > 43200 }}"
+    actions:
+      - action: persistent_notification.create
+        data:
+          title: "Serra: irrigazione quasi a secco"
+          message: >-
+            L'ultima irrigazione ha dato {{ trigger.to_state.state }} L in
+            {{ states('number.serra_durata_irrigazione') }} s. La valvola si e' aperta ma
+            l'acqua non e' arrivata: serbatoio vuoto, rubinetto chiuso, filtro
+            otturato o tubo staccato.
+          notification_id: serra_irrigazione_scarsa
+
   # --- Backlog che cresce ----------------------------------------------------
   - id: serra_backlog_alto
     alias: "Serra - Backlog in crescita"

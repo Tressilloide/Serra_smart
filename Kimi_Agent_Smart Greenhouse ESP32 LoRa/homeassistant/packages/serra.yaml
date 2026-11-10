@@ -77,22 +77,34 @@ utility_meter:
     periodically_resetting: false
 
 # ---------------------------------------------------------------------------
-#  Aiutanti per l'irrigazione adattiva (vedi l'automazione omonima in fondo)
+#  Il pulsante "Durata automatica" e la durata normale
 # ---------------------------------------------------------------------------
+#  Acceso: la durata dell'irrigazione la decide Home Assistant ogni mattina,
+#  da notte e previsione ("Serra durata irrigazione consigliata"; vedi le
+#  automazioni "Serra - Durata automatica ..." in fondo).
+#  Spento: sul nodo torna la DURATA NORMALE, quella impostata a mano.
+#
+#  Non e' "Irrigazione automatica" (switch.serra_irrigazione_automatica), che
+#  accende e spegne l'irrigazione programmata: quella decide SE irrigare, questo
+#  decide QUANTO.
+#
+#  Le chiavi sono quelle della prima versione (11/11/2026, "irrigazione
+#  adattiva" e "durata base"): per gli input_* l'entity_id viene dalla
+#  chiave, e cambiarla creerebbe entita' nuove perdendo lo stato.
 
 input_boolean:
   serra_irrigazione_adattiva:
-    name: Serra irrigazione adattiva
-    icon: mdi:thermometer-water
+    name: Serra durata automatica
+    icon: mdi:robot-happy-outline
 
 input_number:
-  # La durata "di riferimento": quella giusta per una giornata da 10 kPa·h,
-  # il novembre medio (vedi la taratura nella sezione template). Le altre
-  # giornate scalano in proporzione. Niente "initial": Home Assistant la
-  # ricorda fra un riavvio e l'altro. Finche' resta al minimo (mai scelta)
-  # vale la durata impostata adesso sul nodo.
+  # La durata impostata a mano. Si aggiorna da sola ogni volta che qualcuno
+  # cambia la durata sul nodo (da dashboard o dal dettaglio dell'entita'),
+  # e torna sul nodo quando si spegne la durata automatica. Niente
+  # "initial": Home Assistant la ricorda fra un riavvio e l'altro; al primo
+  # avvio, finche' e' al minimo, la si prende dal nodo.
   serra_durata_base_irrigazione:
-    name: Serra durata base irrigazione
+    name: Serra durata normale irrigazione
     min: 10
     max: 600
     step: 10
@@ -408,8 +420,9 @@ template:
   #     metro: 120 s a fine settembre (domanda media 28,5), 90 s a meta'
   #     ottobre (18,6), 50 s a novembre (10,1). Una retta le attraversa tutte:
   #         durata = 14,4 s + 3,78 s per kPa·h
-  #     "Serra durata base irrigazione" e' la durata di una giornata da
-  #     10,1 kPa·h, il novembre medio, e scala tutto in proporzione.
+  #     arrotondata alla decina e tenuta fra 20 e 300 s. Per spostarla (piu'
+  #     acqua o meno acqua in generale) si cambiano i due numeri nel sensore
+  #     qui sotto; tools/calibra_irrigazione.py la ricalcola da nuove scelte.
 
   # --- La notte appena passata ------------------------------------------------
   - triggers:
@@ -630,7 +643,7 @@ template:
           variazione_3_ore: "{{ states('sensor.serra_pressione_variazione_3_ore') | float(0) }}"
 
       # --- La durata consigliata per oggi --------------------------------------
-      # Sempre calcolata e visibile, anche con l'irrigazione adattiva spenta:
+      # Sempre calcolata e visibile, anche con la durata automatica spenta:
       # si puo' guardare per qualche giorno cosa farebbe prima di accenderla.
       - name: "Serra durata irrigazione consigliata"
         unique_id: serra_durata_irrigazione_consigliata
@@ -640,8 +653,6 @@ template:
           {{ states('sensor.serra_notte_temperatura') | is_number
              and state_attr('sensor.serra_notte_temperatura', 'pressione_vapore') is number }}
         state: >-
-          {% set base = states('input_number.serra_durata_base_irrigazione') | float(10) %}
-          {% set base = base if base > 10 else states('number.serra_durata_irrigazione') | float(50) %}
           {% set tn = states('sensor.serra_notte_temperatura') | float %}
           {% set un = state_attr('sensor.serra_notte_temperatura', 'umidita') | float(80) %}
           {% set en = state_attr('sensor.serra_notte_temperatura', 'pressione_vapore') | float %}
@@ -658,9 +669,8 @@ template:
           {% else %}
             {% set d = [[102.4 - 0.619 * tn - 1.04 * un, 0] | max, 45] | min %}
           {% endif %}
-          {% set durata = base * (14.4 + 3.78 * d) / (14.4 + 3.78 * 10.1) %}
-          {% set durata = ((durata / 10) | round(0) * 10) %}
-          {{ ([[durata, [10, 0.4 * base] | max] | max, [600, 3 * base] | min] | min) | int }}
+          {% set durata = ((14.4 + 3.78 * d) / 10) | round(0) * 10 %}
+          {{ ([[durata, 20] | max, 300] | min) | int }}
         attributes:
           domanda_kpa_h: >-
             {% set tn = states('sensor.serra_notte_temperatura') | float(0) %}
@@ -682,9 +692,6 @@ template:
           fonte: >-
             {% set tmax = states('sensor.serra_previsione') | float(none) %}
             {{ 'notte + previsione met.no' if tmax is not none else 'solo notte (previsione non disponibile)' }}
-          base: >-
-            {% set base = states('input_number.serra_durata_base_irrigazione') | float(10) %}
-            {{ (base if base > 10 else states('number.serra_durata_irrigazione') | float(50)) | int }}
           notte_del: "{{ state_attr('sensor.serra_notte_temperatura', 'giorno') }}"
 
 # ---------------------------------------------------------------------------
@@ -971,44 +978,75 @@ automation:
             l'impianto resta pieno d'acqua, valuta di svuotare i tubi.
           notification_id: serra_gelo_previsto
 
-  # --- Irrigazione adattiva --------------------------------------------------
-  # Alle 6:40, dopo la fotografia della notte (6:00) e prima di qualunque
-  # irrigazione di giornata, porta la durata sul nodo a quella di "Serra
-  # durata irrigazione consigliata" (vedi il commento grande nella sezione
-  # template). Il comando arriva al nodo entro un risveglio, cioe' entro le
-  # 6:55: con l'irrigazione programmata prima di quell'ora vale dal giorno
-  # dopo. Si accende e si spegne con "Serra irrigazione adattiva"; da spenta,
-  # la durata resta quella impostata a mano, e la consigliata si puo'
-  # comunque guardare.
+
+  # ===========================================================================
+  #  DURATA AUTOMATICA (il pulsante) E DURATA NORMALE
+  # ===========================================================================
+  #  Cinque automazioni piccole invece di una grande, perche' ognuna risponde
+  #  a una domanda sola:
+  #
+  #    acceso / 6:40         -> sul nodo la durata consigliata
+  #    spento                -> sul nodo la durata normale
+  #    durata cambiata a mano -> diventa la nuova durata normale
+  #    durata normale cambiata a mano, col pulsante spento -> va sul nodo
+  #    primo avvio           -> la durata normale si prende dal nodo
+  #
+  #  "A mano" vuol dire: una persona ha chiamato number.set_value (dashboard,
+  #  dettaglio dell'entita', app). Lo si riconosce dal contesto, che porta
+  #  l'utente; le automazioni non ce l'hanno. NON si guardano i cambi di stato
+  #  di number.serra_durata_irrigazione: quelli li produce il nodo quando
+  #  riferisce sDur, e a ogni riconnessione del ponte il valore ripassa da
+  #  "non disponibile" -- una durata automatica appena impostata finirebbe
+  #  scambiata per una scelta a mano.
+
   - id: serra_irrigazione_adattiva
-    alias: "Serra - Irrigazione adattiva"
-    description: "Regola la durata dell'irrigazione su notte appena passata e previsione"
+    alias: "Serra - Durata automatica"
+    description: "Col pulsante acceso porta sul nodo la durata consigliata: subito e ogni mattina alle 6:40"
     mode: single
     triggers:
       - trigger: time
         at: "06:40:00"
       - trigger: state
         entity_id: input_boolean.serra_irrigazione_adattiva
+        from: "off"
         to: "on"
     conditions:
       - condition: state
         entity_id: input_boolean.serra_irrigazione_adattiva
         state: "on"
-      - "{{ states('number.serra_durata_irrigazione') | is_number }}"
     actions:
-      # All'accensione dell'interruttore, se la base e' ancora al minimo (mai
-      # scelta), si parte dalla durata impostata adesso sul nodo. Solo li':
-      # alle 6:40 una base di 10 s scelta apposta va rispettata.
-      - if: "{{ trigger.platform == 'state' and states('input_number.serra_durata_base_irrigazione') | int(10) <= 10 }}"
+      # La durata normale va messa al sicuro prima di sovrascriverla. Di solito
+      # c'e' gia', ma al primissimo uso no.
+      - if: >-
+          {{ states('input_number.serra_durata_base_irrigazione') | int(10) <= 10
+             and states('number.serra_durata_irrigazione') | is_number }}
         then:
           - action: input_number.set_value
             target:
               entity_id: input_number.serra_durata_base_irrigazione
             data:
-              value: "{{ [states('number.serra_durata_irrigazione') | int(50), 20] | max }}"
-          - delay: "00:00:02"     # il sensore consigliato si ricalcola sulla base nuova
-      - condition: template
-        value_template: "{{ states('sensor.serra_durata_irrigazione_consigliata') | is_number }}"
+              value: "{{ [[states('number.serra_durata_irrigazione') | int, 10] | max, 600] | min }}"
+      # Acceso di notte, prima della fotografia delle 6:00: si dice perche'
+      # non succede niente, invece di lasciar credere che non funzioni.
+      - if: "{{ not states('sensor.serra_durata_irrigazione_consigliata') | is_number }}"
+        then:
+          - if: "{{ trigger.platform == 'state' }}"
+            then:
+              - action: persistent_notification.create
+                data:
+                  title: "Serra: durata automatica accesa"
+                  message: >-
+                    La durata consigliata non e' ancora pronta: serve la notte appena
+                    passata, che si misura dalle 22 alle 6. Fino ad allora il nodo resta a
+                    {{ states('number.serra_durata_irrigazione') }} s; la durata
+                    automatica parte domattina alle 6:40.
+                  notification_id: serra_adattiva
+          - stop: "Durata consigliata non ancora disponibile"
+      # Il ponte puo' essere giu': si aspetta che il nodo torni raggiungibile,
+      # fino a un'ora, invece di perdere il comando in silenzio.
+      - wait_template: "{{ states('number.serra_durata_irrigazione') | is_number }}"
+        timeout: "01:00:00"
+        continue_on_timeout: false
       - variables:
           durata: "{{ states('sensor.serra_durata_irrigazione_consigliata') | int }}"
           attuale: "{{ states('number.serra_durata_irrigazione') | int(0) }}"
@@ -1023,10 +1061,135 @@ automation:
               value: "{{ durata }}"
           - action: persistent_notification.create
             data:
-              title: "Serra: durata irrigazione regolata"
+              title: "Serra: durata automatica"
               message: >-
                 Notte a {{ states('sensor.serra_notte_temperatura') }} °C e
                 {{ state_attr('sensor.serra_notte_temperatura', 'umidita') }} %, massima prevista
                 in serra {{ states('sensor.serra_previsione') }} °C: domanda di {{ domanda }} kPa·h
                 ({{ fonte }}). L'irrigazione passa da {{ attuale }} a {{ durata }} s.
               notification_id: serra_adattiva
+        else:
+          - if: "{{ trigger.platform == 'state' }}"
+            then:
+              - action: persistent_notification.create
+                data:
+                  title: "Serra: durata automatica accesa"
+                  message: >-
+                    Il nodo e' gia' alla durata consigliata per oggi, {{ attuale }} s
+                    (domanda di {{ domanda }} kPa·h). Da domani la sceglie ogni mattina alle 6:40.
+                  notification_id: serra_adattiva
+
+  - id: serra_durata_automatica_spenta
+    alias: "Serra - Durata automatica spenta"
+    description: "Col pulsante spento torna sul nodo la durata normale"
+    mode: restart          # riaccendere e rispegnere non lascia attese vecchie
+    triggers:
+      - trigger: state
+        entity_id: input_boolean.serra_irrigazione_adattiva
+        from: "on"
+        to: "off"
+    conditions:
+      - "{{ states('input_number.serra_durata_base_irrigazione') | int(10) > 10 }}"
+    actions:
+      - variables:
+          normale: "{{ states('input_number.serra_durata_base_irrigazione') | int }}"
+      - wait_template: "{{ states('number.serra_durata_irrigazione') | is_number }}"
+        timeout: "06:00:00"
+        continue_on_timeout: false
+      - if: "{{ states('number.serra_durata_irrigazione') | int(0) != normale }}"
+        then:
+          - action: number.set_value
+            target:
+              entity_id: number.serra_durata_irrigazione
+            data:
+              value: "{{ normale }}"
+      - action: persistent_notification.create
+        data:
+          title: "Serra: durata automatica spenta"
+          message: >-
+            Torna la durata normale: {{ normale }} s. Il nodo la applica al prossimo
+            risveglio, entro 15 minuti.
+          notification_id: serra_adattiva
+
+  - id: serra_durata_normale_ricorda
+    alias: "Serra - Ricorda la durata normale"
+    description: "Una durata impostata a mano diventa la durata normale"
+    mode: queued
+    max: 5
+    triggers:
+      - trigger: event
+        event_type: call_service
+        event_data:
+          domain: number
+          service: set_value
+    conditions:
+      - "{{ trigger.event.context.user_id is not none }}"
+      - >-
+        {% set e = trigger.event.data.service_data.entity_id | default([]) %}
+        {{ 'number.serra_durata_irrigazione' in ([e] if e is string else e) }}
+      - "{{ trigger.event.data.service_data.value is defined }}"
+    actions:
+      - variables:
+          valore: "{{ [[trigger.event.data.service_data.value | float(0) | round(0) | int, 10] | max, 600] | min }}"
+      - action: input_number.set_value
+        target:
+          entity_id: input_number.serra_durata_base_irrigazione
+        data:
+          value: "{{ valore }}"
+      # Col pulsante acceso la scelta a mano vale per oggi, poi alle 6:40 torna
+      # la durata automatica: meglio dirlo.
+      - if: "{{ is_state('input_boolean.serra_irrigazione_adattiva', 'on') }}"
+        then:
+          - action: persistent_notification.create
+            data:
+              title: "Serra: durata impostata a mano"
+              message: >-
+                {{ valore }} s da adesso, ed e' la nuova durata normale. La durata
+                automatica e' accesa: domattina alle 6:40 torna a decidere lei. Per
+                tenere {{ valore }} s anche nei prossimi giorni, spegni "Durata automatica".
+              notification_id: serra_adattiva
+
+  - id: serra_durata_normale_applica
+    alias: "Serra - Applica la durata normale"
+    description: "Col pulsante spento, la durata normale cambiata a mano va subito sul nodo"
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id: input_number.serra_durata_base_irrigazione
+    conditions:
+      - "{{ trigger.to_state.context.user_id is not none }}"
+      - condition: state
+        entity_id: input_boolean.serra_irrigazione_adattiva
+        state: "off"
+      - "{{ states('number.serra_durata_irrigazione') | is_number }}"
+      - "{{ states('number.serra_durata_irrigazione') | int != trigger.to_state.state | int(0) }}"
+    actions:
+      - action: number.set_value
+        target:
+          entity_id: number.serra_durata_irrigazione
+        data:
+          value: "{{ trigger.to_state.state | int }}"
+
+  - id: serra_durata_normale_iniziale
+    alias: "Serra - Durata normale iniziale"
+    description: "Finche' la durata normale non e' mai stata scelta, la si prende dal nodo"
+    mode: single
+    triggers:
+      - trigger: homeassistant
+        event: start
+      - trigger: event
+        event_type: automation_reloaded
+      - trigger: state
+        entity_id: number.serra_durata_irrigazione
+    conditions:
+      - "{{ states('input_number.serra_durata_base_irrigazione') | int(10) <= 10 }}"
+      - "{{ states('number.serra_durata_irrigazione') | is_number }}"
+      - condition: state
+        entity_id: input_boolean.serra_irrigazione_adattiva
+        state: "off"
+    actions:
+      - action: input_number.set_value
+        target:
+          entity_id: input_number.serra_durata_base_irrigazione
+        data:
+          value: "{{ [[states('number.serra_durata_irrigazione') | int, 10] | max, 600] | min }}"

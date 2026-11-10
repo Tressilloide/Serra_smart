@@ -152,9 +152,11 @@ views:
               - entity: number.serra_durata_irrigazione
                 name: Durata
               - entity: input_boolean.serra_irrigazione_adattiva
-                name: Durata adattiva (temperatura di ieri)
+                name: Durata automatica (notte + previsione)
+              - entity: sensor.serra_durata_irrigazione_consigliata
+                name: Durata consigliata
               - entity: input_number.serra_durata_base_irrigazione
-                name: Durata base (giornata da 18-26 °C)
+                name: Durata normale (con l'automatica spenta)
               - entity: number.serra_soglia_umidita_terreno
                 name: Irriga solo sotto (-1 = sempre)
               - type: attribute

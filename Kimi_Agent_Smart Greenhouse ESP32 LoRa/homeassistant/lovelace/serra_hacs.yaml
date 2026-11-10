@@ -72,9 +72,9 @@ views:
               - type: template
                 icon: mdi:clock-outline
                 content: >-
-                  {{ states('sensor.serra_minuti_silenzio') }} min fa
+                  {{ states('sensor.serra_minuti_dall_ultimo_contatto') }} min fa
                 icon_color: >-
-                  {% if states('sensor.serra_minuti_silenzio') | int(9999) > 60 %} orange
+                  {% if states('sensor.serra_minuti_dall_ultimo_contatto') | int(9999) > 60 %} orange
                   {% else %} grey {% endif %}
               - type: entity
                 entity: sensor.serra_record_in_backlog
@@ -345,7 +345,7 @@ views:
           - type: entities
             entities:
               - entity: sensor.serra_firmware_nodo
-              - entity: sensor.serra_ora_nodo
+              - entity: sensor.serra_ora_del_nodo
                 name: Orologio del nodo
               - entity: sensor.serra_motivo_ultimo_riavvio
               - entity: sensor.serra_record_in_backlog

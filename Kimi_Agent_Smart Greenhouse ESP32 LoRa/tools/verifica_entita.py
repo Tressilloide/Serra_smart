@@ -36,7 +36,7 @@ import re
 import sys
 import urllib.request
 
-DOMINI = "sensor|binary_sensor|button|number|switch|time"
+DOMINI = "sensor|binary_sensor|button|number|switch|time|input_boolean|input_number"
 
 
 def slug(nome):
@@ -99,7 +99,20 @@ def entita_dal_package(percorso):
             r"^  ([a-z_]+):\r?\n    name:\s*(.+?)\r?$", pkg, re.M):
         trovate.add("sensor." + slug(nome.strip()))
 
+    # Aiutanti: qui l'entity_id viene dalla CHIAVE, non dal nome.
+    for dominio, blocco in re.findall(
+            r"^(input_boolean|input_number):\r?\n((?:(?:  .*)?\r?\n)*)", pkg, re.M):
+        for chiave in re.findall(r"^  ([a-z0-9_]+):", blocco, re.M):
+            trovate.add(dominio + "." + chiave)
+
     return trovate
+
+
+def senza_azioni(testo):
+    """Toglie le righe "action: dominio.servizio": number.set_value e' un
+    servizio, non un'entita', e non deve risultare un riferimento rotto."""
+    return "\n".join(l for l in testo.splitlines()
+                     if not re.match(r"\s*(?:-\s*)?action:", l))
 
 
 def entita_reali(base, token):
@@ -136,7 +149,7 @@ def main():
     file_da_controllare.append("homeassistant/packages/serra.yaml")
 
     for f in file_da_controllare:
-        testo = senza_commenti(io.open(f, encoding="utf-8").read())
+        testo = senza_azioni(senza_commenti(io.open(f, encoding="utf-8").read()))
         usate = sorted(set(re.findall(r"\b((?:%s)\.[a-z0-9_]+)" % DOMINI, testo)))
 
         confronto = reali if reali is not None else esistenti

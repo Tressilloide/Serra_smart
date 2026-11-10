@@ -46,6 +46,9 @@ views:
         entity: sensor.serra_segnale_lora
         name: LoRa
       - type: entity
+        entity: sensor.serra_cicli_ricevuti_24h
+        name: Cicli 24 h
+      - type: entity
         entity: sensor.serra_comandi_in_coda
         name: In coda
         visibility:
@@ -148,6 +151,10 @@ views:
                 name: Orario - minuto
               - entity: number.serra_durata_irrigazione
                 name: Durata
+              - entity: input_boolean.serra_irrigazione_adattiva
+                name: Durata adattiva (temperatura di ieri)
+              - entity: input_number.serra_durata_base_irrigazione
+                name: Durata base (giornata da 18-26 °C)
               - entity: number.serra_soglia_umidita_terreno
                 name: Irriga solo sotto (-1 = sempre)
               - type: attribute
@@ -270,13 +277,17 @@ views:
           - type: entities
             entities:
               - entity: sensor.serra_firmware_nodo
-              - entity: sensor.serra_ora_nodo
+              - entity: sensor.serra_ora_del_nodo
                 name: Ora dell'orologio del nodo
               - entity: sensor.serra_motivo_ultimo_riavvio
               - entity: sensor.serra_record_in_backlog
+              - entity: sensor.serra_pacchetti_in_riserva
+              - entity: sensor.serra_cicli_ricevuti_24h
               - entity: sensor.serra_pacchetto_troncato
               - entity: sensor.serra_segnale_lora
               - entity: sensor.serra_snr_lora
+              - entity: sensor.serra_pacchetti_crc_errato
+              - entity: sensor.serra_record_arretrati_recuperati
               - entity: number.serra_intervallo_risveglio
 
           - type: markdown

@@ -25,10 +25,17 @@
 #  cio' che non e' lettera o cifra — apostrofi compresi. Verificato sul campo:
 #  "Serra minuti dall'ultimo contatto" diventa
 #  sensor.serra_minuti_dall_ultimo_contatto, con l'apostrofo trasformato in
-#  underscore e non semplicemente tolto. Per non doverlo indovinare, i nomi
-#  delle entita' richiamate altrove nel file sono deliberatamente senza
-#  apostrofi. Se aggiungi entita' tue, ricordatelo o i riferimenti non
-#  troveranno nulla e i sensori resteranno "non disponibile" senza spiegazione.
+#  underscore e non semplicemente tolto. Se aggiungi entita' tue, ricordatelo
+#  o i riferimenti non troveranno nulla e i sensori resteranno "non
+#  disponibile" senza spiegazione.
+#
+#  Una volta registrata, pero', l'entita' conserva il suo id anche se il nome
+#  cambia: il registro la ritrova dall'unique_id. Per questo due nomi qui
+#  sotto sono quelli della prima installazione ("Serra ora del nodo", "Serra
+#  minuti dall'ultimo contatto") e non vanno "ripuliti": con i nomi senza
+#  apostrofo che il repository ha usato fra settembre e novembre 2026 il
+#  file diventava incompatibile con l'installazione vera, e l'allarme "nodo
+#  muto" non sarebbe scattato mai.
 #
 #  utility_meter e' un caso a se': l'entity_id viene dal "name", ma
 #  l'unique_id dalla CHIAVE. Cambiare la chiave di un contatore gia' esistente
@@ -49,17 +56,48 @@
 #  Il nodo trasmette solo il totale cumulativo (acquaTot): i totali giornaliero
 #  e mensile li calcola Home Assistant, che lo fa molto meglio e senza occupare
 #  byte preziosi nel pacchetto LoRa.
+#
+#  periodically_resetting: false, perche' acquaTot non si azzera mai da solo.
+#  Senza, il contatore trattava ogni ritorno da "non disponibile" (una
+#  riconnessione del ponte) come un azzeramento della sorgente e ripartiva
+#  dal valore nuovo, buttando l'acqua erogata nel frattempo: a ottobre 2026
+#  il mensile segnava 68,20 L contro 79,44 L veri.
 
 utility_meter:
   acqua_serra_giornaliera:
     name: Acqua serra oggi
     source: sensor.serra_acqua_totale
     cycle: daily
+    periodically_resetting: false
 
   acqua_serra_mensile:
     name: Acqua serra questo mese
     source: sensor.serra_acqua_totale
     cycle: monthly
+    periodically_resetting: false
+
+# ---------------------------------------------------------------------------
+#  Aiutanti per l'irrigazione adattiva (vedi l'automazione omonima in fondo)
+# ---------------------------------------------------------------------------
+
+input_boolean:
+  serra_irrigazione_adattiva:
+    name: Serra irrigazione adattiva
+    icon: mdi:thermometer-water
+
+input_number:
+  # La durata "di riferimento", quella giusta per una giornata da 18-26 °C.
+  # Niente "initial": Home Assistant la ricorda fra un riavvio e l'altro. Alla
+  # prima accensione dell'irrigazione adattiva, se e' ancora al minimo, viene
+  # copiata dalla durata impostata in quel momento sul nodo.
+  serra_durata_base_irrigazione:
+    name: Serra durata base irrigazione
+    min: 10
+    max: 600
+    step: 10
+    unit_of_measurement: s
+    mode: box
+    icon: mdi:timer-cog-outline
 
 # ---------------------------------------------------------------------------
 #  Sensori MQTT aggiuntivi (quelli che la discovery non genera)
@@ -82,7 +120,7 @@ mqtt:
 
     # Ora dichiarata dal NODO: se resta a 1970 vuol dire che il DS1307 ha perso
     # l'ora e non e' ancora stato risincronizzato dal ponte.
-    - name: "Serra ora nodo"
+    - name: "Serra ora del nodo"
       unique_id: serra_ora_nodo
       state_topic: "serra/nodo/stato"
       value_template: >-
@@ -119,12 +157,11 @@ template:
           {{ (es * (1 - rh / 100)) | round(2) }}
 
       # --- Minuti dall'ultimo contatto ---------------------------------------
-      - name: "Serra minuti silenzio"
+      - name: "Serra minuti dall'ultimo contatto"
         unique_id: serra_minuti_silenzio
         unit_of_measurement: "min"
         state_class: measurement
         icon: mdi:timer-sand
-        entity_category: diagnostic
         state: >-
           {% set t = states('sensor.serra_ultimo_contatto') %}
           {% if t in ['unknown','unavailable',''] %}
@@ -138,21 +175,24 @@ template:
         unique_id: serra_stato_generale
         icon: mdi:greenhouse
         state: >-
-          {% set silenzio = states('sensor.serra_minuti_silenzio') | int(9999) %}
+          {% set silenzio = states('sensor.serra_minuti_dall_ultimo_contatto') | int(9999) %}
           {% set batt     = states('sensor.serra_tensione_batteria') | float(99) %}
           {% set coda     = states('sensor.serra_comandi_in_coda') | int(0) %}
           {% set backlog  = states('sensor.serra_record_in_backlog') | int(0) %}
+          {% set copertura = states('sensor.serra_cicli_ricevuti_24h') | float(100) %}
           {% if states('binary_sensor.serra_ponte_online') == 'off' %} Ponte offline
           {% elif silenzio > 120 %} Nodo non risponde
           {% elif batt < 11.0 %} Batteria scarica
+          {% elif copertura < 80 %} Collegamento debole
           {% elif backlog < 0 %} MicroSD guasta
           {% elif backlog > 10 %} Dati in attesa
           {% elif coda > 0 %} Comando in coda
           {% else %} Tutto ok
           {% endif %}
         attributes:
-          minuti_silenzio: "{{ states('sensor.serra_minuti_silenzio') | int(9999) }}"
+          minuti_silenzio: "{{ states('sensor.serra_minuti_dall_ultimo_contatto') | int(9999) }}"
           comandi_in_coda: "{{ states('sensor.serra_comandi_in_coda') | int(0) }}"
+          cicli_ricevuti_24h: "{{ states('sensor.serra_cicli_ricevuti_24h') }}"
 
   - binary_sensor:
       - name: "Serra ponte online"
@@ -168,6 +208,114 @@ template:
         device_class: problem
         icon: mdi:water-alert
         state: "{{ states('sensor.serra_esito_irrigazione') == 'nessun_flusso' }}"
+
+  # --- Temperatura massima e minima di oggi ----------------------------------
+  # Sensori "a trigger": si aggiornano a ogni nuova lettura e a mezzanotte.
+  # L'attributo "giorno" fa ripartire il conteggio quando cambia la data (anche
+  # se HA era spento a mezzanotte); "ora" dice quando e' stato toccato l'estremo;
+  # "ieri" conserva l'estremo del giorno prima, che usa l'irrigazione adattiva.
+  # Dopo un riavvio HA ripristina da solo valore e attributi.
+  - triggers:
+      - trigger: time
+        at: "00:00:00"
+      - trigger: state
+        entity_id: sensor.serra_temperatura
+        not_to: [unknown, unavailable]
+    sensor:
+      - name: "Serra temperatura massima oggi"
+        unique_id: serra_temperatura_max_oggi
+        unit_of_measurement: "°C"
+        device_class: temperature
+        state_class: measurement
+        icon: mdi:thermometer-chevron-up
+        state: >-
+          {% set t = states('sensor.serra_temperatura') | float(none) %}
+          {% set m = this.state | float(none) if this.attributes.get('giorno') == now().date() | string else none %}
+          {% set v = [t, m] | reject('none') | list %}
+          {{ (v | max) if v else none }}
+        attributes:
+          giorno: "{{ now().date() | string }}"
+          ora: >-
+            {% set t = states('sensor.serra_temperatura') | float(none) %}
+            {% set m = this.state | float(none) if this.attributes.get('giorno') == now().date() | string else none %}
+            {{ now().strftime('%H:%M') if t is not none and (m is none or t > m)
+               else (this.attributes.get('ora') if m is not none else none) }}
+          ieri: >-
+            {% set g = this.attributes.get('giorno') %}
+            {% if g == now().date() | string %}{{ this.attributes.get('ieri') }}
+            {% elif g == (now() - timedelta(days=1)).date() | string %}{{ this.state | float(none) }}
+            {% else %}{{ none }}{% endif %}
+
+      - name: "Serra temperatura minima oggi"
+        unique_id: serra_temperatura_min_oggi
+        unit_of_measurement: "°C"
+        device_class: temperature
+        state_class: measurement
+        icon: mdi:thermometer-chevron-down
+        state: >-
+          {% set t = states('sensor.serra_temperatura') | float(none) %}
+          {% set m = this.state | float(none) if this.attributes.get('giorno') == now().date() | string else none %}
+          {% set v = [t, m] | reject('none') | list %}
+          {{ (v | min) if v else none }}
+        attributes:
+          giorno: "{{ now().date() | string }}"
+          ora: >-
+            {% set t = states('sensor.serra_temperatura') | float(none) %}
+            {% set m = this.state | float(none) if this.attributes.get('giorno') == now().date() | string else none %}
+            {{ now().strftime('%H:%M') if t is not none and (m is none or t < m)
+               else (this.attributes.get('ora') if m is not none else none) }}
+          ieri: >-
+            {% set g = this.attributes.get('giorno') %}
+            {% if g == now().date() | string %}{{ this.attributes.get('ieri') }}
+            {% elif g == (now() - timedelta(days=1)).date() | string %}{{ this.state | float(none) }}
+            {% else %}{{ none }}{% endif %}
+
+  # --- Cicli ricevuti nelle ultime 24 ore ------------------------------------
+  # Quanti dei risvegli attesi hanno lasciato un dato in Home Assistant, in
+  # tempo reale (serra/nodo/stato) o recuperato dopo dalle code del nodo
+  # (serra/nodo/storico). E' la misura che mancava: dal 31/10 al 10/11/2026
+  # e' arrivato l'87% dei cicli, e lo si e' scoperto solo contando a mano
+  # i salti nell'ora del nodo.
+  #
+  # Ogni pacchetto viene ricondotto al suo "posto" nel calendario dei
+  # risvegli (t diviso l'intervallo, arrotondato): l'esito di un comando
+  # partito pochi secondi dopo il pacchetto principale, o la ripubblicazione
+  # del retained dopo una riconnessione, cadono nello stesso posto e non
+  # contano due volte. L'attributo "slot" tiene i posti delle ultime 24 ore;
+  # nelle prime 24 ore di vita il confronto si fa sul tempo trascorso.
+  - triggers:
+      - trigger: mqtt
+        topic: "serra/nodo/stato"
+      - trigger: mqtt
+        topic: "serra/nodo/storico"
+      - trigger: time_pattern
+        minutes: "/15"
+    sensor:
+      - name: "Serra cicli ricevuti 24h"
+        unique_id: serra_cicli_ricevuti_24h
+        unit_of_measurement: "%"
+        state_class: measurement
+        icon: mdi:radar
+        state: >-
+          {% set slp = states('number.serra_intervallo_risveglio') | int(900) %}
+          {% set slp = slp if slp >= 60 else 900 %}
+          {% set t = (trigger.payload_json.t | default(0) | int(0)) if trigger.platform == 'mqtt' and trigger.payload_json is defined else 0 %}
+          {% set nuovo = [(t / slp) | round(0) | int] if t > 0 else [] %}
+          {% set adesso = now().timestamp() %}
+          {% set slot = ((this.attributes.get('slot') or []) + nuovo)
+                        | unique | select('>', ((adesso - 86400) / slp) | int) | list %}
+          {% set inizio = this.attributes.get('inizio') or adesso %}
+          {% set attesi = ([86400, adesso - inizio] | min / slp) | round(0) %}
+          {{ ([100, slot | count / attesi * 100] | min) | round(0) if attesi >= 1 else 100 }}
+        attributes:
+          slot: >-
+            {% set slp = states('number.serra_intervallo_risveglio') | int(900) %}
+            {% set slp = slp if slp >= 60 else 900 %}
+            {% set t = (trigger.payload_json.t | default(0) | int(0)) if trigger.platform == 'mqtt' and trigger.payload_json is defined else 0 %}
+            {% set nuovo = [(t / slp) | round(0) | int] if t > 0 else [] %}
+            {{ ((this.attributes.get('slot') or []) + nuovo)
+               | unique | select('>', ((now().timestamp() - 86400) / slp) | int) | sort | list }}
+          inizio: "{{ this.attributes.get('inizio') or now().timestamp() | int }}"
 
 # ---------------------------------------------------------------------------
 #  Automazioni
@@ -204,7 +352,7 @@ automation:
     mode: single
     triggers:
       - trigger: numeric_state
-        entity_id: sensor.serra_minuti_silenzio
+        entity_id: sensor.serra_minuti_dall_ultimo_contatto
         above: 120
     conditions:
       - condition: state
@@ -215,7 +363,7 @@ automation:
         data:
           title: "Serra: nodo silenzioso"
           message: >-
-            Nessun dato dalla serra da {{ states('sensor.serra_minuti_silenzio') }} minuti.
+            Nessun dato dalla serra da {{ states('sensor.serra_minuti_dall_ultimo_contatto') }} minuti.
             Controlla alimentazione del nodo, antenna LoRa e batteria.
           notification_id: serra_muto
 
@@ -288,3 +436,169 @@ automation:
                 Codici: 1 = opcode sconosciuto, 2 = argomenti errati,
                 3 = bloccato da un limite di sicurezza, 4 = hardware assente.
               notification_id: serra_cmd
+
+  # --- Gelo e caldo ----------------------------------------------------------
+  # Ogni soglia compare due volte, nel trigger (che vuole un numero scritto,
+  # non un template) e nella variabile "soglia" del messaggio: per cambiarla
+  # vanno cambiati tutti e due. Al massimo un
+  # avviso ogni 12 ore, perche' una temperatura che oscilla attorno alla
+  # soglia lo farebbe ripartire a ogni pacchetto (e il package delle
+  # notifiche Telegram inoltra ogni avviso al telefono).
+  - id: serra_rischio_gelo
+    alias: "Serra - Rischio gelo"
+    description: "La temperatura in serra scende sotto la soglia di gelo"
+    mode: single
+    variables:
+      soglia: 2.0          # °C
+    triggers:
+      - trigger: numeric_state
+        entity_id: sensor.serra_temperatura
+        below: 2.0         # la stessa soglia: qui serve un numero letterale
+    conditions:
+      - "{{ this.attributes.last_triggered is none or (now() - this.attributes.last_triggered).total_seconds() > 43200 }}"
+    actions:
+      - action: persistent_notification.create
+        data:
+          title: "Serra: rischio gelo"
+          message: >-
+            In serra ci sono {{ states('sensor.serra_temperatura') }} °C, sotto i
+            {{ soglia }} °C (minima di oggi {{ states('sensor.serra_temperatura_minima_oggi') }} °C).
+            Valuta un telo di copertura o un riscaldatore; l'acqua nei tubi
+            dell'irrigazione puo' gelare.
+          notification_id: serra_gelo
+
+  - id: serra_troppo_caldo
+    alias: "Serra - Troppo caldo"
+    description: "La temperatura in serra supera la soglia di caldo"
+    mode: single
+    variables:
+      soglia: 40.0         # °C
+    triggers:
+      - trigger: numeric_state
+        entity_id: sensor.serra_temperatura
+        above: 40.0
+    conditions:
+      - "{{ this.attributes.last_triggered is none or (now() - this.attributes.last_triggered).total_seconds() > 43200 }}"
+    actions:
+      - action: persistent_notification.create
+        data:
+          title: "Serra: troppo caldo"
+          message: >-
+            In serra ci sono {{ states('sensor.serra_temperatura') }} °C, oltre i
+            {{ soglia }} °C, con umidita' al {{ states('sensor.serra_umidita_aria') }} %
+            (VPD {{ states('sensor.serra_vpd') }} kPa). Apri o ombreggia la serra.
+          notification_id: serra_caldo
+
+  # --- Collegamento debole ---------------------------------------------------
+  # Meno dell'85% dei cicli arrivati nelle ultime 24 ore, contando anche
+  # quelli recuperati dopo dalle code del nodo. Al massimo un avviso al giorno.
+  - id: serra_collegamento_debole
+    alias: "Serra - Collegamento debole"
+    description: "Troppi cicli del nodo non arrivano a Home Assistant"
+    mode: single
+    triggers:
+      - trigger: numeric_state
+        entity_id: sensor.serra_cicli_ricevuti_24h
+        below: 85
+        for: "01:00:00"
+    conditions:
+      - "{{ this.attributes.last_triggered is none or (now() - this.attributes.last_triggered).total_seconds() > 86400 }}"
+    actions:
+      - action: persistent_notification.create
+        data:
+          title: "Serra: collegamento debole"
+          message: >-
+            Nelle ultime 24 ore e' arrivato il {{ states('sensor.serra_cicli_ricevuti_24h') }}%
+            dei cicli del nodo. Segnale LoRa {{ states('sensor.serra_segnale_lora') }} dBm,
+            SNR {{ states('sensor.serra_snr_lora') }} dB. Controlla antenne e
+            connettori di nodo e ponte; con la microSD guasta i pacchetti
+            persi aspettano solo nella riserva in RAM del nodo (firmware 2.6.0).
+          notification_id: serra_collegamento
+
+  # --- MicroSD guasta --------------------------------------------------------
+  # bl = -1: il nodo non vede la scheda. Senza microSD resta solo la riserva
+  # in RAM RTC (circa 11 ore, firmware 2.6.0), che una mancanza di corrente
+  # cancella.
+  - id: serra_microsd_guasta
+    alias: "Serra - MicroSD guasta"
+    description: "Il nodo non riesce piu' a usare la microSD"
+    mode: single
+    triggers:
+      - trigger: numeric_state
+        entity_id: sensor.serra_record_in_backlog
+        below: 0
+        for: "03:00:00"
+    actions:
+      - action: persistent_notification.create
+        data:
+          title: "Serra: microSD guasta"
+          message: >-
+            Da piu' di tre ore il nodo non vede la microSD. I pacchetti non
+            consegnati aspettano nella riserva in RAM ({{ states('sensor.serra_pacchetti_in_riserva') }}
+            in attesa), che si perde se manca la corrente. Controlla scheda e
+            modulo: il modulo con level shifter vuole 5 V, non 3,3 V.
+          notification_id: serra_microsd
+
+  # --- Irrigazione adattiva --------------------------------------------------
+  # Ogni notte regola la durata dell'irrigazione sulla temperatura massima
+  # di ieri in serra, partendo dalla "durata base" (quella giusta per una
+  # giornata da 18-26 °C):
+  #
+  #     massima di ieri   < 10   10-18   18-26   26-32   32-38   >= 38 °C
+  #     durata            x0,5   x0,7    x1,0    x1,3    x1,6    x2,0
+  #
+  # arrotondata alla decina di secondi e tenuta fra 10 e 600 s; il nodo
+  # applica comunque i suoi tetti (900 s, 4 irrigazioni al giorno, 30 minuti
+  # fra una e l'altra). Gira alle 00:20, cosi' il comando arriva al nodo
+  # entro un risveglio anche con l'irrigazione programmata di primo mattino.
+  # Si accende e si spegne con "Serra irrigazione adattiva"; da spenta, la
+  # durata resta quella impostata a mano.
+  - id: serra_irrigazione_adattiva
+    alias: "Serra - Irrigazione adattiva"
+    description: "Regola la durata dell'irrigazione sulla temperatura massima di ieri"
+    mode: single
+    triggers:
+      - trigger: time
+        at: "00:20:00"
+      - trigger: state
+        entity_id: input_boolean.serra_irrigazione_adattiva
+        to: "on"
+    conditions:
+      - condition: state
+        entity_id: input_boolean.serra_irrigazione_adattiva
+        state: "on"
+      - "{{ states('number.serra_durata_irrigazione') not in ['unknown', 'unavailable'] }}"
+    actions:
+      # Prima accensione: la base e' ancora al minimo, quindi non e' mai
+      # stata scelta. Si parte dalla durata impostata adesso sul nodo.
+      - if: "{{ states('input_number.serra_durata_base_irrigazione') | int(10) <= 10 }}"
+        then:
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.serra_durata_base_irrigazione
+            data:
+              value: "{{ [states('number.serra_durata_irrigazione') | int(50), 10] | max }}"
+      - variables:
+          tmax: "{{ state_attr('sensor.serra_temperatura_massima_oggi', 'ieri') }}"
+      - condition: template
+        value_template: "{{ tmax is number }}"
+      - variables:
+          base: "{{ states('input_number.serra_durata_base_irrigazione') | float(50) }}"
+          fattore: "{{ 0.5 if tmax < 10 else 0.7 if tmax < 18 else 1.0 if tmax < 26 else 1.3 if tmax < 32 else 1.6 if tmax < 38 else 2.0 }}"
+          durata: "{{ ([[(base * fattore / 10) | round(0) * 10, 10] | max, 600] | min) | int }}"
+          attuale: "{{ states('number.serra_durata_irrigazione') | int(0) }}"
+      - if: "{{ durata != attuale }}"
+        then:
+          - action: number.set_value
+            target:
+              entity_id: number.serra_durata_irrigazione
+            data:
+              value: "{{ durata }}"
+          - action: persistent_notification.create
+            data:
+              title: "Serra: durata irrigazione regolata"
+              message: >-
+                Ieri in serra la massima e' stata di {{ tmax }} °C: l'irrigazione
+                passa da {{ attuale }} a {{ durata }} s (base {{ base | int }} s, x{{ fattore }}).
+                Il nodo applica il cambio al prossimo risveglio.
+              notification_id: serra_adattiva

@@ -407,7 +407,7 @@ essere accodato: ogni campo nuovo va verificato con `tools/test_arretrati.py`.
 | Firmware in funzione | Nodo **2.6.0**, ponte **2.6.0**, flashati l'11/11/2026 alle 11 |
 | Firmware nel repository | Nodo **2.6.0**, ponte **2.6.1** (da flashare, vedi sotto) |
 | Radio del ponte | **Guasta dall'11/11 alle 12:08**: il modulo LoRa del ponte non esce da sleep, dalla serra non arriva niente. Guasto elettrico sul ponte, cominciato il 10/11 con la 2.5.0 (vedi le questioni aperte) |
-| Package HA | **Installato l'11/11/2026** (backup `packages/serra.yaml.bak-20261111*`), con la Panoramica nuova, il pulsante *Durata automatica* e la card 3D 1.1. Il sensore *Radio del ponte* e il suo avviso (11/11 sera) sono nel repository, da installare |
+| Package HA | **Installato l'11/11/2026** (backup `packages/serra.yaml.bak-20261111*`), con la Panoramica nuova, il pulsante *Durata automatica* e la card 3D 1.1. La sera dell'11/11 aggiunti il sensore *Radio del ponte* e il suo avviso (backup `/config/serra.yaml.bak-20261111-radio`) |
 | Quota di Home Assistant | Portata da 0 a **1000 m** l'11/11: met.no correggeva le temperature sul livello del mare e le dava 6,0 °C troppo alte |
 | Irrigazione | Automatica alle 12:00 per 50 s, circa 2,0 L; il 4/11 la valvola si è aperta ma sono passati 0,002 L |
 | Collegamento | Dal 30/10 al 10/11 arrivato l'87,2% dei cicli (853 su 978); 24% il 4/11 e 61% il 5/11, buco più lungo 9,3 ore |

@@ -389,7 +389,7 @@ Serra_smart/
     ├── docs/                         ← guida, protocollo, pinout
     ├── test_protocollo/              ← autotest del protocollo su un ESP32 qualsiasi
     ├── test_flusso/                  ← test del flussometro sulla scheda del nodo
-    └── tools/                        ← test (finestra di irrigazione, arretrati, tempo di volo, riserva…)
+    └── tools/                        ← test (finestra di irrigazione, arretrati, tempo di volo, riserva, radio del ponte…)
                                         e salute_serra.py, il rapporto giornaliero dal recorder di HA
 ```
 
@@ -400,13 +400,14 @@ essere accodato: ogni campo nuovo va verificato con `tools/test_arretrati.py`.
 
 ---
 
-## 9. Stato al 10/11/2026
+## 9. Stato all'11/11/2026
 
 | Parte | Stato |
 |---|---|
-| Firmware in funzione | Nodo **2.5.0**, ponte **2.5.0** (flashato il 20/10/2026, senza riavvii da allora) |
-| Firmware nel repository | Nodo **2.6.0**, ponte **2.6.0**, da flashare: **prima il ponte, poi il nodo** |
-| Package HA | **Installato l'11/11/2026** (backup `packages/serra.yaml.bak-20261111*`), con la Panoramica nuova, il pulsante *Durata automatica* e la card 3D 1.1 |
+| Firmware in funzione | Nodo **2.6.0**, ponte **2.6.0**, flashati l'11/11/2026 alle 11 |
+| Firmware nel repository | Nodo **2.6.0**, ponte **2.6.1** (da flashare, vedi sotto) |
+| Radio del ponte | **Guasta dall'11/11 alle 12:08**: il modulo LoRa del ponte non esce da sleep, dalla serra non arriva niente. Guasto elettrico sul ponte, cominciato il 10/11 con la 2.5.0 (vedi le questioni aperte) |
+| Package HA | **Installato l'11/11/2026** (backup `packages/serra.yaml.bak-20261111*`), con la Panoramica nuova, il pulsante *Durata automatica* e la card 3D 1.1. Il sensore *Radio del ponte* e il suo avviso (11/11 sera) sono nel repository, da installare |
 | Quota di Home Assistant | Portata da 0 a **1000 m** l'11/11: met.no correggeva le temperature sul livello del mare e le dava 6,0 °C troppo alte |
 | Irrigazione | Automatica alle 12:00 per 50 s, circa 2,0 L; il 4/11 la valvola si è aperta ma sono passati 0,002 L |
 | Collegamento | Dal 30/10 al 10/11 arrivato l'87,2% dei cicli (853 su 978); 24% il 4/11 e 61% il 5/11, buco più lungo 9,3 ore |
@@ -432,6 +433,33 @@ docker exec -i homeassistant python3 - --giorni 10 < "Kimi_Agent_Smart Greenhous
 - Il nodo 2.6.0 compila a 436.706 byte con il core esp32 3.3.12, il ponte a
   1.011.501. Una cifra molto diversa vuol dire sketch sbagliato.
 
+### Cosa cambia con il ponte 2.6.1
+
+L'11/11/2026 il modulo LoRa del ponte ha smesso di uscire da sleep: teneva
+tutta la configurazione, rispondeva sul bus, ma non entrava in ricezione. Il
+ponte 2.6.0 annotava il registro del modo fra quelli "esclusi dalla verifica",
+restava con `radio_ok` a 1 e riprovava solo quando scattava la sorveglianza
+del silenzio: dopo 35 minuti, poi 70, 140, 280.
+
+- L'avvio della radio **controlla di essere entrato in ricezione**, con fino
+  a tre passate sleep → standby → ricezione. Se non ci riesce è un avvio
+  fallito: `radio_ok` a 0, il motivo in `radio_avv` (`la radio resta in sleep
+  (modo 0x80)`, `il modulo non risponde (versione 0x00)`), e un nuovo
+  tentativo **ogni 30 secondi** finché non riparte. Lo stesso se a reset
+  appena fatto non tornano più di tre registri.
+- Diagnostica `radio_falliti`: gli avvii falliti di fila.
+- Package HA: `binary_sensor.serra_radio_del_ponte` (Problema quando la radio
+  del ponte non ascolta, con il motivo fra gli attributi), l'avviso *Radio del
+  ponte guasta*, e l'avviso *Nessun dato dal nodo* che in quel caso manda a
+  guardare il ponte invece di nodo e antenna.
+- `tools/test_radio_ponte.py` fa girare sul PC `camera_ponte/radio.cpp` con
+  la libreria LoRa vera contro un SX1278 simulato (`tools/sim_radio/`) che si
+  guasta negli stessi modi: 11 scenari.
+- Compila a 1.012.053 byte. Il nodo non cambia.
+
+Il firmware non ripara un filo: serve a ripartire da solo entro 30 secondi
+quando il contatto torna, e a dire subito in Home Assistant dov'è il guasto.
+
 ### Installare il package HA
 
 Il file del repository ora parte da quello installato il 27/10, quindi si può
@@ -445,6 +473,14 @@ docker exec homeassistant python3 -m homeassistant --script check_config -c /con
 
 Questioni aperte:
 
+- **Modulo LoRa del ponte che non risponde** (dal 10/11/2026 alle 08:46,
+  quando il ponte è stato riavviato dopo 20 giorni). Prima il registro di
+  versione letto a 0x00 o 0xFF, a tratti; dall'11/11 alle 13:34 tutti i
+  registri giusti ma il modo fermo a 0x80, sleep. Non è l'antenna (darebbe
+  segnale basso e CRC errati, non registri sbagliati) e non è il firmware (il
+  codice della radio è lo stesso dalla 2.5.0). Da controllare, nell'ordine:
+  **3,3 V e massa** del modulo, poi MISO (GPIO 19), NSS (5), SCK (18), MOSI
+  (23), RST (14); togliere e ridare corrente; se non basta, cambiare il Ra-01.
 - **microSD del nodo non rilevata** (`bl = -1`) dal 20/10/2026. Sospetto
   principale: modulo alimentato a 3,3 V invece di 5 V. Con il nodo 2.6.0 la
   riserva RTC limita i danni, e il montaggio a 1 MHz potrebbe bastare a

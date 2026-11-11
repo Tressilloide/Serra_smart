@@ -51,6 +51,14 @@
  *   3. Configurazione COMPLETA a ogni avvio, anche dei registri che la
  *      libreria non tocca mai: se il filo di reset non facesse il suo lavoro,
  *      quei registri conserverebbero valori di chissa' quando.
+ *      E l'avvio CONTROLLA che la radio sia entrata davvero in ricezione:
+ *      l'11/11/2026 il modulo teneva tutta la configurazione ma restava in
+ *      sleep, e fino alla 2.6.0 il ponte lo annotava fra i registri "esclusi
+ *      dalla verifica" e restava sordo con radio_ok a 1, riprovando solo
+ *      quando scattava la sorveglianza del silenzio (dopo 35, 70, 140, 280
+ *      minuti). Dalla 2.6.1 una radio che non ascolta e' un avvio fallito:
+ *      radio_ok a 0, il motivo in radio_avv, e un nuovo tentativo ogni
+ *      RADIO_RIPROVA_MS.
  *   4. Ogni RADIO_VERIFICA_MS, e subito dopo ogni ACK, rilettura dei
  *      registri. Un valore sbagliato confermato da altre due letture vuol dire
  *      registro alterato: reset hardware e riconfigurazione, come un riavvio
@@ -81,8 +89,11 @@ enum CausaRiparazione : uint8_t {
 
 /*
  * Reset hardware, configurazione completa e ascolto continuo.
- * false se il modulo non risponde sul bus SPI: in quel caso radioSorveglia()
- * riprova da sola ogni RADIO_RIPROVA_MS.
+ *
+ * false se la radio non sta ascoltando: il modulo non risponde sul bus SPI,
+ * non entra in ricezione, oppure a reset appena fatto troppi registri non
+ * tornano. radioAvviso() dice quale dei tre, e radioSorveglia() riprova da
+ * sola ogni RADIO_RIPROVA_MS finche' non riparte.
  */
 bool radioAvvia();
 
@@ -114,9 +125,14 @@ uint32_t         radioRiparazioni();
 CausaRiparazione radioUltimaCausa();
 const char*      radioCausaTesto(CausaRiparazione causa);
 const char*      radioUltimoDettaglio();   // "" se non ci sono state riparazioni
-// Registri che non tornavano nemmeno a reset appena fatto, e che quindi la
-// verifica salta, oppure perche' il modulo non risponde. "" di norma.
+// Perche' la radio non parte ("il modulo non risponde", "la radio resta in
+// sleep", il primo registro che non torna), oppure, con la radio in servizio,
+// il registro escluso dalla verifica perche' non tornava nemmeno a reset
+// appena fatto. "" di norma.
 const char*      radioAvviso();
+// Avvii falliti di fila: zero appena la radio riparte. Con RADIO_RIPROVA_MS
+// dice da quanto il ponte sta riprovando.
+uint32_t         radioAvviiFalliti();
 uint32_t         radioLettureIncoerenti();
 uint32_t         radioCrcErrati();
 

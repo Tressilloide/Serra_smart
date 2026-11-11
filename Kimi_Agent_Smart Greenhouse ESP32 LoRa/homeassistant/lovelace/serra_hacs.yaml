@@ -362,6 +362,8 @@ views:
           - type: entities
             entities:
               - entity: binary_sensor.serra_ponte_online
+              - entity: binary_sensor.serra_radio_del_ponte
+                name: Radio LoRa del ponte
               - entity: sensor.serra_ponte_uptime
               - entity: sensor.serra_ponte_segnale_wifi
               - entity: sensor.serra_ponte_memoria_libera

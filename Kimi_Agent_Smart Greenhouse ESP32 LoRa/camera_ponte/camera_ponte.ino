@@ -905,7 +905,7 @@ static void pubblicaDiagnostica() {
     "\"mqtt_caduta\":%d,\"rssi_caduta\":%d,"
     "\"eco_ko\":%lu,\"eco_ms\":%lu,"
     "\"radio_ok\":%d,\"radio_rip\":%lu,\"radio_causa\":\"%s\",\"radio_det\":\"%s\","
-    "\"radio_avv\":\"%s\",\"rst_hw\":%d,"
+    "\"radio_avv\":\"%s\",\"radio_falliti\":%lu,\"rst_hw\":%d,"
     "\"ack_persi\":%lu,\"spi_inc\":%lu,\"crc_ko\":%lu,\"storici\":%lu,"
     "\"ip\":\"%s\",\"fw\":\"%s\"}",
     (unsigned long)(millis() / 1000UL),
@@ -943,9 +943,13 @@ static void pubblicaDiagnostica() {
      *   radio_rip    reset fatti per rimetterla in sesto dall'avvio; zero e'
      *                il caso normale. radio_causa e radio_det dicono perche'
      *                l'ultimo, compreso il registro trovato alterato
-     *   radio_avv    il primo registro escluso dalla verifica perche' non
-     *                torna nemmeno a reset appena fatto, oppure perche' il
-     *                modulo non parte; vuoto di norma
+     *   radio_ok     0 se la radio non sta ascoltando: il ponte riprova
+     *                ad avviarla ogni RADIO_RIPROVA_MS
+     *   radio_avv    perche' non parte ("il modulo non risponde", "la radio
+     *                resta in sleep"), oppure il primo registro escluso
+     *                dalla verifica perche' non torna nemmeno a reset appena
+     *                fatto; vuoto di norma
+     *   radio_falliti  avvii falliti di fila; zero appena riparte
      *   rst_hw       1 se il filo di reset funziona, 0 se no, -1 non ancora
      *                verificato (lo si sa dal primo riavvio senza staccare
      *                la corrente, per esempio dopo un OTA)
@@ -957,7 +961,7 @@ static void pubblicaDiagnostica() {
      */
     radioOk() ? 1 : 0, (unsigned long)radioRiparazioni(),
     radioCausaTesto(radioUltimaCausa()), radioUltimoDettaglio(),
-    radioAvviso(), (int)radioResetHw(),
+    radioAvviso(), (unsigned long)radioAvviiFalliti(), (int)radioResetHw(),
     (unsigned long)ackPersi, (unsigned long)radioLettureIncoerenti(),
     (unsigned long)radioCrcErrati(), (unsigned long)recordStorici,
     WiFi.localIP().toString().c_str(), FW_VERSION_PONTE);

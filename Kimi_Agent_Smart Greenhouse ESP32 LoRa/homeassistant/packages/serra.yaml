@@ -196,6 +196,42 @@ mqtt:
       entity_category: diagnostic
       icon: mdi:clock-alert-outline
 
+  binary_sensor:
+    # La radio LoRa del ponte sta ascoltando?
+    #
+    # L'11/11/2026 il ponte era acceso, collegato e "online", ma il suo modulo
+    # LoRa non usciva da sleep: dalla serra non arrivava piu' niente, e in Home
+    # Assistant l'unico segno era il nodo che dopo due ore risultava muto. Qui
+    # il guasto ha un nome suo. "Problema" quando:
+    #   - radio_ok vale 0: il modulo non risponde o non entra in ricezione, e
+    #     il ponte (dalla 2.6.1) riprova ad avviarlo ogni 30 secondi;
+    #   - radio_avv non e' vuoto: a reset appena fatto un registro non tornava.
+    # Il motivo, in parole, e' nell'attributo "motivo". L'attributo
+    # "in_ascolto" dice se intanto la radio riceve: no se radio_ok e' 0, e no
+    # anche se il registro che non torna e' il modo (0x01) o la versione
+    # (0x42), che e' come il ponte 2.6.0 presentava la radio in sleep
+    # tenendo radio_ok a 1.
+    - name: "Serra radio del ponte"
+      unique_id: serra_radio_del_ponte
+      state_topic: "serra/ponte/diag"
+      value_template: >-
+        {{ 'ON' if (value_json.radio_ok | default(1) | int(1)) == 0
+                   or (value_json.radio_avv | default('')) != ''
+           else 'OFF' }}
+      json_attributes_topic: "serra/ponte/diag"
+      json_attributes_template: >-
+        {% set motivo = value_json.radio_avv | default('') %}
+        {{ {'motivo': motivo,
+            'in_ascolto': (value_json.radio_ok | default(1) | int(1)) == 1
+                          and not (motivo.startswith('reg 0x01') or motivo.startswith('reg 0x42')),
+            'avvii_falliti': value_json.radio_falliti | default(0),
+            'riparazioni': value_json.radio_rip | default(0),
+            'ultima_riparazione': value_json.radio_det | default('')} | tojson }}
+      device_class: problem
+      availability_topic: "serra/ponte/stato"
+      entity_category: diagnostic
+      icon: mdi:radio-tower
+
 # ---------------------------------------------------------------------------
 #  Sensori calcolati
 # ---------------------------------------------------------------------------
@@ -739,10 +775,69 @@ automation:
       - action: persistent_notification.create
         data:
           title: "Serra: nodo silenzioso"
+          # Se a non ascoltare e' la radio del ponte, mandare a controllare
+          # nodo e antenna e' una falsa pista: l'11/11/2026 e' andata cosi'.
           message: >-
             Nessun dato dalla serra da {{ states('sensor.serra_minuti_dall_ultimo_contatto') }} minuti.
+            {% if is_state('binary_sensor.serra_radio_del_ponte', 'on')
+                  and not state_attr('binary_sensor.serra_radio_del_ponte', 'in_ascolto') %}
+            Il guasto e' sul ponte, non nella serra: la sua radio LoRa non ascolta
+            ({{ state_attr('binary_sensor.serra_radio_del_ponte', 'motivo') }}).
+            {% else %}
             Controlla alimentazione del nodo, antenna LoRa e batteria.
+            {% endif %}
           notification_id: serra_muto
+
+  # --- Radio del ponte guasta ------------------------------------------------
+  # Il ponte e' acceso e parla con MQTT, ma il suo modulo LoRa no. Cinque
+  # minuti di attesa: una riparazione riuscita dura meno di un secondo e non
+  # deve far scattare niente. Quando la radio riparte l'avviso si toglie da solo.
+  - id: serra_radio_ponte_guasta
+    alias: "Serra - Radio del ponte guasta"
+    description: "Il ponte e' acceso ma il suo modulo LoRa non ascolta"
+    mode: restart
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.serra_radio_del_ponte
+        to: "on"
+        for: "00:05:00"
+        id: guasta
+      - trigger: state
+        entity_id: binary_sensor.serra_radio_del_ponte
+        from: "on"
+        to: "off"
+        for: "00:02:00"
+        id: riparte
+    actions:
+      - choose:
+          - conditions:
+              - condition: trigger
+                id: guasta
+            sequence:
+              - action: persistent_notification.create
+                data:
+                  title: "Serra: la radio del ponte non funziona"
+                  message: >-
+                    {% set motivo = state_attr('binary_sensor.serra_radio_del_ponte', 'motivo') %}
+                    {% if state_attr('binary_sensor.serra_radio_del_ponte', 'in_ascolto') %}
+                    La radio LoRa del ponte ascolta, ma a reset appena fatto un
+                    registro di configurazione non torna: {{ motivo }}.
+                    Se i dati della serra arrivano non e' urgente: e' un
+                    indizio di fili disturbati fra ESP32 e modulo LoRa.
+                    {% else %}
+                    Il ponte e' acceso e collegato, ma il suo modulo LoRa non
+                    sta ascoltando: {{ motivo }}.
+                    Finche' resta cosi' dalla serra non arriva niente. Il nodo
+                    intanto irriga da solo e tiene da parte gli ultimi dati
+                    (circa 11 ore senza microSD).
+                    Controlla i fili fra ESP32 e modulo LoRa del ponte, per
+                    primi 3,3 V e massa, poi togli e ridai corrente al ponte.
+                    {% endif %}
+                  notification_id: serra_radio_ponte
+        default:
+          - action: persistent_notification.dismiss
+            data:
+              notification_id: serra_radio_ponte
 
   # --- Anomalia idraulica ----------------------------------------------------
   - id: serra_nessun_flusso

@@ -406,7 +406,7 @@ l'impianto — passerebbe a vuoto senza segnalare nulla.
 | `serra/nodo/cmd/res` | ponte → HA | no | Esito di un comando |
 | `serra/nodo/cmd/pending` | ponte → HA | sì | Comandi ancora in attesa |
 | `serra/ponte/stato` | ponte → HA | sì | `online`/`offline` (Last Will) |
-| `serra/ponte/diag` | ponte → HA | sì | Diagnostica del ponte (compresi `eco_ko`, i pacchetti rimasti senza ACK per eco mancata, ed `eco_ms`, il tempo dell'ultima eco; dalla 2.5.0 anche lo stato della radio: `radio_ok`, `radio_rip`, `radio_causa`, `radio_det`, `radio_avv`, `rst_hw`, `ack_persi`, `spi_inc`, `crc_ko`; dalla 2.6.0 `storici`, i record arretrati pubblicati su `serra/nodo/storico`) |
+| `serra/ponte/diag` | ponte → HA | sì | Diagnostica del ponte (compresi `eco_ko`, i pacchetti rimasti senza ACK per eco mancata, ed `eco_ms`, il tempo dell'ultima eco; dalla 2.5.0 anche lo stato della radio: `radio_ok`, `radio_rip`, `radio_causa`, `radio_det`, `radio_avv`, `rst_hw`, `ack_persi`, `spi_inc`, `crc_ko`; dalla 2.6.0 `storici`, i record arretrati pubblicati su `serra/nodo/storico`; dalla 2.6.1 `radio_falliti`, gli avvii della radio falliti di fila, e `radio_ok` a 0 anche quando il modulo risponde ma non entra in ricezione) |
 | `serra/ponte/log` | ponte → HA | sì | L'ultima riparazione della radio del ponte, con motivo e dettaglio (per esempio il registro trovato alterato) |
 | `serra/ponte/eco` | ponte → ponte | no | Eco di conferma (§2.2): il ponte deve poterci scrivere **e** leggere |
 | `homeassistant/…/config` | ponte → HA | sì | MQTT Discovery |

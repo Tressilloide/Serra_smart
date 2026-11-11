@@ -10,7 +10,7 @@
 
 #pragma once
 
-#define FW_VERSION_PONTE "2.6.0"
+#define FW_VERSION_PONTE "2.6.1"
 
 // ======================= RADIO LoRa =========================================
 // DEVONO coincidere esattamente con serra_nodo/config.h, altrimenti i due
@@ -60,6 +60,23 @@
 // ogni quanto riprovare ad avviarlo (vedi radio.h)
 #define RADIO_VERIFICA_MS  10000UL
 #define RADIO_RIPROVA_MS   30000UL
+
+/*
+ * Avvio della radio (vedi radioAvvia() in radio.cpp).
+ *
+ * RADIO_MODO_MS e RADIO_MODO_TENTATIVI: quanto aspettare che il modulo
+ * confermi un cambio di modo (un SX1278 sano ci mette meno di un
+ * millisecondo) e quante passate sleep -> standby -> ricezione fare prima di
+ * dichiarare l'avvio fallito.
+ *
+ * RADIO_ESCLUSI_MAX: quanti registri di configurazione possono non tornare
+ * a reset appena fatto restando un "difetto della tabella" da tollerare. Di
+ * piu', e' il modulo che non si legge o non si scrive: avvio fallito, e si
+ * riprova ogni RADIO_RIPROVA_MS.
+ */
+#define RADIO_MODO_MS         50UL
+#define RADIO_MODO_TENTATIVI  3
+#define RADIO_ESCLUSI_MAX     3
 
 /*
  * Riparazioni per sintomi, quando i registri sembrano a posto ma la radio no

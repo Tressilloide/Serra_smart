@@ -45,7 +45,10 @@
 #define SX_PA_DAC               0x4D
 
 #define SX_MODO_LORA            0x80
+#define SX_MODO_SLEEP           0x00
+#define SX_MODO_STANDBY         0x01
 #define SX_MODO_RX_CONTINUA     0x05
+#define SX_MASCHERA_MODO        0xC7   // LoRa, pagina dei registri e modo: i bit 3-5 non contano
 
 #define SX_IRQ_TX_DONE          0x08
 #define SX_IRQ_CRC_ERRATO       0x20
@@ -103,41 +106,42 @@ struct RegistroAtteso {
   uint8_t reg;
   uint8_t maschera;   // i bit che contano: i riservati restano fuori
   uint8_t valore;     // gia' mascherato
+  bool    vitale;     // senza questo la radio non ascolta: vedi radioAvvia()
 };
 
 static const RegistroAtteso ATTESI[] = {
   // registro                 maschera  valore
-  { SX_VERSION,                 0xFF,  SX_VERSIONE_ATTESA },
+  { SX_VERSION,                 0xFF,  SX_VERSIONE_ATTESA, true },
   // LoRa, pagina dei registri LoRa (bit 6 a zero), ricezione continua
-  { SX_OP_MODE,                 0xC7,  SX_MODO_LORA | SX_MODO_RX_CONTINUA },
-  { SX_FRF_MSB,                 0xFF,  (uint8_t)(FRF_ATTESA >> 16) },
-  { SX_FRF_MID,                 0xFF,  (uint8_t)(FRF_ATTESA >> 8) },
-  { SX_FRF_LSB,                 0xFF,  (uint8_t)(FRF_ATTESA) },
-  { SX_MODEM_CONFIG_1,          0xFF,  MC1_ATTESO },
-  { SX_MODEM_CONFIG_2,          0xFF,  MC2_ATTESO },
-  { SX_MODEM_CONFIG_3,          0x0C,  MC3_ATTESO },
-  { SX_PA_CONFIG,               0xFF,  PA_CONFIG_ATTESO },
-  { SX_PA_DAC,                  0x07,  PA_DAC_ATTESO },
-  { SX_OCP,                     0x3F,  OCP_ATTESO },
-  { SX_PA_RAMP,                 0x0F,  PA_RAMP_ATTESO },
-  { SX_LNA,                     0x1B,  LNA_ATTESO & 0x1B },
-  { SX_FIFO_TX_BASE_ADDR,       0xFF,  0x00 },
-  { SX_FIFO_RX_BASE_ADDR,       0xFF,  0x00 },
+  { SX_OP_MODE,                 SX_MASCHERA_MODO, SX_MODO_LORA | SX_MODO_RX_CONTINUA, true },
+  { SX_FRF_MSB,                 0xFF,  (uint8_t)(FRF_ATTESA >> 16), false },
+  { SX_FRF_MID,                 0xFF,  (uint8_t)(FRF_ATTESA >> 8), false },
+  { SX_FRF_LSB,                 0xFF,  (uint8_t)(FRF_ATTESA), false },
+  { SX_MODEM_CONFIG_1,          0xFF,  MC1_ATTESO, false },
+  { SX_MODEM_CONFIG_2,          0xFF,  MC2_ATTESO, false },
+  { SX_MODEM_CONFIG_3,          0x0C,  MC3_ATTESO, false },
+  { SX_PA_CONFIG,               0xFF,  PA_CONFIG_ATTESO, false },
+  { SX_PA_DAC,                  0x07,  PA_DAC_ATTESO, false },
+  { SX_OCP,                     0x3F,  OCP_ATTESO, false },
+  { SX_PA_RAMP,                 0x0F,  PA_RAMP_ATTESO, false },
+  { SX_LNA,                     0x1B,  LNA_ATTESO & 0x1B, false },
+  { SX_FIFO_TX_BASE_ADDR,       0xFF,  0x00, false },
+  { SX_FIFO_RX_BASE_ADDR,       0xFF,  0x00, false },
   // Un bit a 1 qui fa sparire il flag corrispondente: RxDone mascherato e'
   // una radio che riceve senza dirlo a nessuno
-  { SX_IRQ_FLAGS_MASK,          0xFF,  0x00 },
-  { SX_PREAMBLE_MSB,            0xFF,  (uint8_t)(LORA_PREAMBOLO >> 8) },
-  { SX_PREAMBLE_LSB,            0xFF,  (uint8_t)(LORA_PREAMBOLO) },
-  { SX_MAX_PAYLOAD_LENGTH,      0xFF,  0xFF },
-  { SX_HOP_PERIOD,              0xFF,  0x00 },
-  { SX_DETECTION_OPTIMIZE,      0x07,  DET_OPT_ATTESO },
-  { SX_DETECTION_THRESHOLD,     0xFF,  DET_THR_ATTESO },
+  { SX_IRQ_FLAGS_MASK,          0xFF,  0x00, false },
+  { SX_PREAMBLE_MSB,            0xFF,  (uint8_t)(LORA_PREAMBOLO >> 8), false },
+  { SX_PREAMBLE_LSB,            0xFF,  (uint8_t)(LORA_PREAMBOLO), false },
+  { SX_MAX_PAYLOAD_LENGTH,      0xFF,  0xFF, false },
+  { SX_HOP_PERIOD,              0xFF,  0x00, false },
+  { SX_DETECTION_OPTIMIZE,      0x07,  DET_OPT_ATTESO, false },
+  { SX_DETECTION_THRESHOLD,     0xFF,  DET_THR_ATTESO, false },
   // I/Q dritti sia in ricezione (bit 6 a zero) sia in trasmissione (bit 0 a
   // uno): con quello di trasmissione invertito il ponte sentirebbe il nodo e
   // il nodo non sentirebbe nessun ACK
-  { SX_INVERTIQ,                0x41,  0x01 },
-  { SX_INVERTIQ2,               0xFF,  0x1D },
-  { SX_SYNC_WORD,               0xFF,  LORA_SYNC_WORD },
+  { SX_INVERTIQ,                0x41,  0x01, false },
+  { SX_INVERTIQ2,               0xFF,  0x1D, false },
+  { SX_SYNC_WORD,               0xFF,  LORA_SYNC_WORD, false },
 };
 
 static const size_t N_ATTESI = sizeof(ATTESI) / sizeof(ATTESI[0]);
@@ -158,6 +162,7 @@ static uint32_t         g_crcErrati         = 0;
 static int8_t           g_resetHw           = -1;
 static uint32_t         g_ultimaVerificaMs  = 0;
 static uint32_t         g_ultimoTentativoMs = 0;
+static uint32_t         g_avviiFalliti      = 0;   // di fila: torna a zero quando la radio riparte
 
 // ---------------------------------------------------------------------------
 //  Accesso diretto ai registri
@@ -254,8 +259,80 @@ static uint32_t tempoDiVoloMs(size_t lunghezza) {
 }
 
 // ---------------------------------------------------------------------------
+//  Ingresso in ricezione
+// ---------------------------------------------------------------------------
+
+// Rilegge il registro del modo finche' non ha il valore voluto, per al
+// massimo RADIO_MODO_MS. In `letto` resta l'ultima lettura, tutta intera.
+static bool aspettaModo(uint8_t voluto, uint8_t& letto) {
+  const uint32_t t0 = millis();
+  for (;;) {
+    letto = sxLeggi(SX_OP_MODE);
+    if ((letto & SX_MASCHERA_MODO) == voluto) return true;
+    if (millis() - t0 >= RADIO_MODO_MS) return false;
+    delay(1);
+  }
+}
+
+/*
+ * Mette la radio in ricezione continua e CONTROLLA che ci sia entrata.
+ *
+ * L'11/11/2026 il modulo del ponte rispondeva sul bus, teneva tutti e
+ * ventitre' i registri di configurazione, e il registro del modo restava a
+ * 0x80: sleep. Per uscire da sleep un SX1278 deve far partire il suo
+ * oscillatore, quindi i sospettati sono l'alimentazione del modulo (filo del
+ * 3,3 V o di massa che fa falso contatto: la parte digitale campa anche con
+ * il poco che entra dai fili dei dati, l'oscillatore no) e il modulo stesso.
+ * E' una deduzione, non una misura: da qui si vede solo il registro.
+ *
+ * Nel dubbio che basti dargli tempo, non ci si limita a riscrivere
+ * "ricezione": si riparte da sleep, si passa da standby aspettando che il
+ * modulo lo confermi, e solo allora si chiede la ricezione.
+ * RADIO_MODO_TENTATIVI passate in tutto (al peggio un terzo di secondo), poi
+ * si lascia perdere e ci riprova radioSorveglia() ogni RADIO_RIPROVA_MS.
+ */
+static bool entraInRicezione(uint8_t& modo) {
+  const uint8_t ricezione = SX_MODO_LORA | SX_MODO_RX_CONTINUA;
+
+  sxScrivi(SX_IRQ_FLAGS, 0xFF);
+  LoRa.receive();
+  if (aspettaModo(ricezione, modo)) return true;
+
+  for (uint8_t passata = 1; passata < RADIO_MODO_TENTATIVI; passata++) {
+    sxScrivi(SX_OP_MODE, SX_MODO_LORA | SX_MODO_SLEEP);
+    delay(10);
+    sxScrivi(SX_OP_MODE, SX_MODO_LORA | SX_MODO_STANDBY);
+    aspettaModo(SX_MODO_LORA | SX_MODO_STANDBY, modo);
+
+    sxScrivi(SX_IRQ_FLAGS, 0xFF);
+    LoRa.receive();
+    if (aspettaModo(ricezione, modo)) return true;
+  }
+  return false;
+}
+
+// Il motivo per cui la radio non ascolta, in parole: finisce in radioAvviso().
+static void descriviModo(char* out, size_t dim, uint8_t modo) {
+  if ((modo & 0xC0) != SX_MODO_LORA)
+    snprintf(out, dim, "la radio non resta in LoRa (modo 0x%02X)", modo);
+  else if ((modo & 0x07) == SX_MODO_SLEEP)
+    snprintf(out, dim, "la radio resta in sleep (modo 0x%02X)", modo);
+  else if ((modo & 0x07) == SX_MODO_STANDBY)
+    snprintf(out, dim, "la radio resta in standby (modo 0x%02X)", modo);
+  else
+    snprintf(out, dim, "la radio non entra in ricezione (modo 0x%02X)", modo);
+}
+
+// ---------------------------------------------------------------------------
 //  Avvio
 // ---------------------------------------------------------------------------
+
+// Avvio non riuscito: la radio e' fuori servizio e radioSorveglia() riprova.
+static bool avvioFallito() {
+  g_ok = false;
+  g_avviiFalliti++;
+  return false;
+}
 
 bool radioAvvia() {
   // Anche il bus SPI dell'ESP32 riparte da capo, come in un riavvio. Con NSS
@@ -280,8 +357,7 @@ bool radioAvvia() {
   if (!LoRa.begin(LORA_BAND)) {          // qui dentro il reset hardware
     snprintf(g_avviso, sizeof(g_avviso), "il modulo non risponde (versione 0x%02X)",
              sxLeggi(SX_VERSION));
-    g_ok = false;
-    return false;
+    return avvioFallito();
   }
 
   if (provaReset) g_resetHw = (sxLeggi(SX_SYNC_WORD) == SX_MARCATORE_RESET) ? 0 : 1;
@@ -310,37 +386,64 @@ bool radioAvvia() {
   sxScrivi(SX_MAX_PAYLOAD_LENGTH, 0xFF);
   sxScrivi(SX_HOP_PERIOD,         0x00);
 
-  sxScrivi(SX_IRQ_FLAGS, 0xFF);
-  LoRa.receive();                        // ricezione continua
-
-  /*
-   * Verifica a reset appena fatto. Un registro che non torna nemmeno adesso
-   * non e' stato alterato da un disturbo: o la radio non accetta quella
-   * scrittura, o la tabella si aspetta un valore che questo modulo non tiene.
-   * In entrambi i casi il registro viene escluso dalla verifica periodica,
-   * che altrimenti lo "riparerebbe" ogni dieci secondi per sempre, e finisce
-   * in radioAvviso(). La radio resta in servizio comunque: un errore nella
-   * tabella non deve poter rendere sordo il ponte, cioe' produrre proprio il
-   * guasto che questo file esiste per curare. Se poi la radio non funziona
-   * davvero, ci pensa la sorveglianza del silenzio.
-   */
   for (size_t i = 0; i < N_ATTESI; i++) g_escluso[i] = false;
   g_avviso[0] = '\0';
 
+  /*
+   * In ricezione continua, e controllando che ci sia entrata davvero. Fino
+   * alla 2.6.0 il registro del modo era un registro come gli altri: se a
+   * reset appena fatto non tornava veniva "escluso dalla verifica", e il
+   * ponte restava con radio_ok a 1 e la radio in sleep, sordo, finche' la
+   * sorveglianza del silenzio non riprovava: dopo 35 minuti, poi 70, 140,
+   * 280. L'11/11/2026 e' andata cosi' dalle 13:34 in poi.
+   */
+  uint8_t modo = 0;
+  if (!entraInRicezione(modo)) {
+    descriviModo(g_avviso, sizeof(g_avviso), modo);
+    Serial.printf("[LoRa] ERRORE: %s.\n", g_avviso);
+    return avvioFallito();
+  }
+
+  /*
+   * Verifica a reset appena fatto. Un registro di configurazione che non
+   * torna nemmeno adesso non e' stato alterato da un disturbo: o la radio non
+   * accetta quella scrittura, o la tabella si aspetta un valore che questo
+   * modulo non tiene. In entrambi i casi il registro viene escluso dalla
+   * verifica periodica, che altrimenti lo "riparerebbe" ogni dieci secondi
+   * per sempre, e finisce in radioAvviso(). La radio resta in servizio
+   * comunque: un errore nella tabella non deve poter rendere sordo il ponte,
+   * cioe' produrre proprio il guasto che questo file esiste per curare.
+   *
+   * Questo vale per uno o due registri. Non vale:
+   *   - per i registri VITALI, versione e modo: se non tornano la radio non
+   *     sta ascoltando, qualunque cosa dica la tabella;
+   *   - quando a non tornare sono piu' di RADIO_ESCLUSI_MAX: non e' la
+   *     tabella, e' il modulo che non si legge o non si scrive (l'11/11
+   *     alle 13:32 erano diciotto su venticinque, e il ponte si dichiarava
+   *     a posto con la verifica spenta quasi per intero).
+   * In quei casi l'avvio e' fallito e si riprova ogni RADIO_RIPROVA_MS.
+   */
   uint8_t  letto   = 0;
   unsigned esclusi = 0;
+  bool     vitale  = false;
   int      i;
   while ((i = registroSbagliato(letto)) >= 0) {
     g_escluso[i] = true;
+    vitale = vitale || ATTESI[i].vitale;
     if (esclusi++ == 0) descrivi(g_avviso, sizeof(g_avviso), ATTESI[i], letto);
     Serial.printf("[LoRa] ATTENZIONE: registro 0x%02X diverso dall'atteso subito dopo "
-                  "il reset (letto 0x%02X): escluso dalla verifica.\n", ATTESI[i].reg, letto);
+                  "il reset (letto 0x%02X).\n", ATTESI[i].reg, letto);
   }
   if (esclusi > 1) {
     const size_t l = strlen(g_avviso);
     snprintf(g_avviso + l, sizeof(g_avviso) - l, " (+%u)", esclusi - 1);
   }
+  if (vitale || esclusi > RADIO_ESCLUSI_MAX) {
+    for (size_t k = 0; k < N_ATTESI; k++) g_escluso[k] = false;
+    return avvioFallito();
+  }
 
+  g_avviiFalliti = 0;
   g_ok = true;
   g_ultimaVerificaMs = millis();
   return true;
@@ -492,4 +595,5 @@ const char*      radioUltimoDettaglio()   { return g_dettaglio; }
 const char*      radioAvviso()            { return g_avviso; }
 uint32_t         radioLettureIncoerenti() { return g_incoerenti; }
 uint32_t         radioCrcErrati()         { return g_crcErrati; }
+uint32_t         radioAvviiFalliti()      { return g_avviiFalliti; }
 int8_t           radioResetHw()           { return g_resetHw; }

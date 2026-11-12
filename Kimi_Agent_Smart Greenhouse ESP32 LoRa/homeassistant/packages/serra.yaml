@@ -1288,3 +1288,17 @@ automation:
           entity_id: input_number.serra_durata_base_irrigazione
         data:
           value: "{{ [[states('number.serra_durata_irrigazione') | int, 10] | max, 600] | min }}"
+
+# ---------------------------------------------------------------------------
+#  DATI RECUPERATI NEI GRAFICI
+# ---------------------------------------------------------------------------
+#  I record che il nodo rimanda dopo un buio (serra/nodo/storico) vengono
+#  registrati all'ora in cui sono stati misurati, cosi' nei grafici il buco
+#  si chiude: temperatura, umidita', pressione, batteria, luce e VPD, con le
+#  statistiche orarie. Lo fa il componente custom_components/serra_storico,
+#  che va copiato in /config/custom_components (poi riavvio). Senza il
+#  componente questa riga fa fallire la verifica della configurazione:
+#  toglierla se non lo si installa.
+#  sensor.serra_ultimo_recupero_nei_grafici dice quanti valori ha scritto
+#  l'ultima volta, e per che periodo.
+serra_storico:

@@ -460,6 +460,24 @@ del silenzio: dopo 35 minuti, poi 70, 140, 280.
 Il firmware non ripara un filo: serve a ripartire da solo entro 30 secondi
 quando il contatto torna, e a dire subito in Home Assistant dov'è il guasto.
 
+### Dati recuperati nei grafici (12/11/2026)
+
+Home Assistant registra ogni stato all'ora in cui arriva, quindi i record
+che il nodo rimanda dopo un buio (`serra/nodo/storico`) non comparivano nei
+grafici. Il componente `homeassistant/custom_components/serra_storico` li
+scrive nel database del recorder all'ora in cui sono stati misurati (campo
+`t`): temperatura, umidità, pressione, batteria, luce e VPD, più le
+statistiche orarie delle ore toccate. Non scrive due volte lo stesso ciclo
+e scarta ore impossibili. `sensor.serra_ultimo_recupero_nei_grafici` dice
+quanti valori ha scritto l'ultima volta e per quale periodo.
+
+Installazione: copiare la cartella in `/config/custom_components/`, tenere
+la riga `serra_storico:` in fondo al package, riavviare. Per recuperare un
+buio precedente si ripubblicano i record su `serra/nodo/storico/reimporta`.
+Prova: `tools/test_storico_ha.py`. Scrive direttamente nelle tabelle del
+recorder (non esiste un modo ufficiale): a un aggiornamento importante di
+Home Assistant conviene rilanciare la prova.
+
 ### Installare il package HA
 
 Il file del repository ora parte da quello installato il 27/10, quindi si può

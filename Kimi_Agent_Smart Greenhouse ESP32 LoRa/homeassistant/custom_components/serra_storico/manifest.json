@@ -1,0 +1,10 @@
+{
+  "domain": "serra_storico",
+  "name": "Serra: dati recuperati nei grafici",
+  "codeowners": [],
+  "dependencies": ["mqtt", "recorder"],
+  "documentation": "https://github.com/Tressilloide/Serra_smart",
+  "iot_class": "local_push",
+  "requirements": [],
+  "version": "1.0.0"
+}
